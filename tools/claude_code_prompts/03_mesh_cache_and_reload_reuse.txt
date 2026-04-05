@@ -1,0 +1,39 @@
+Task: add mesh caching and reuse so scene reload does not repeatedly parse identical assets.
+
+Context:
+- `buildScene()` reloads meshes from disk every time a map is loaded.
+- Meshes such as `cube.stl`, `sphere_r150.stl`, `pine_tree.stl`, and especially `EinsteinBustTongue.stl` are reused across maps.
+- Current loader appends directly into the scene-wide vertex/index arrays and does not maintain a reusable mesh cache.
+- Relevant files:
+  - src/VulkanApp.cpp
+  - src/VulkanApp.h
+  - src/MeshLoader.cpp
+  - src/MeshLoader.h
+
+Goal:
+- Avoid reparsing identical mesh files on every scene switch.
+- Keep the renderer's external behavior the same.
+
+Requested changes:
+1. Introduce a CPU-side mesh cache keyed by mesh path plus any properties that materially change loaded geometry.
+2. Change the mesh loading path so parsed mesh data can be reused across scene loads instead of reparsing every time.
+3. Keep scene-local transforms and material values separate from cached mesh geometry.
+4. Update build/load timing logs so cache hits and misses are visible.
+5. If useful, add a small helper struct that stores reusable geometry plus bounding-box data.
+
+Constraints:
+- Do not add a complex asset database.
+- Keep the code local to this project.
+- Avoid changing scene-file format in this part.
+
+Definition of done:
+- Release build succeeds.
+- Switching between maps that reuse the same mesh files no longer reparses every asset from disk each time.
+- Load logs clearly show cache hit or miss.
+- Bounding-box behavior and rendering remain correct.
+
+Please include in your final response:
+- files changed
+- cache key design
+- which expensive assets now benefit most
+

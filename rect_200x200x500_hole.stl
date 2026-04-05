@@ -1,0 +1,226 @@
+solid rect_200x200x500_hole
+  facet normal 0 0 -1
+    outer loop
+      vertex 0 0 0
+      vertex 0 200 0
+      vertex 200 200 0
+    endloop
+  endfacet
+  facet normal 0 0 -1
+    outer loop
+      vertex 0 0 0
+      vertex 200 200 0
+      vertex 200 0 0
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex 0 0 500
+      vertex 200 0 500
+      vertex 200 200 500
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex 0 0 500
+      vertex 200 200 500
+      vertex 0 200 500
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex 0 0 0
+      vertex 0 0 500
+      vertex 0 200 500
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex 0 0 0
+      vertex 0 200 500
+      vertex 0 200 0
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex 200 0 0
+      vertex 200 200 0
+      vertex 200 200 500
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex 200 0 0
+      vertex 200 200 500
+      vertex 200 0 500
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 0 0 0
+      vertex 200 0 0
+      vertex 200 0 250
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 0 0 0
+      vertex 200 0 250
+      vertex 0 0 250
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 0 0 250
+      vertex 50 0 250
+      vertex 50 0 350
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 0 0 250
+      vertex 50 0 350
+      vertex 0 0 350
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 150 0 250
+      vertex 200 0 250
+      vertex 200 0 350
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 150 0 250
+      vertex 200 0 350
+      vertex 150 0 350
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 0 0 350
+      vertex 200 0 350
+      vertex 200 0 500
+    endloop
+  endfacet
+  facet normal 0 -1 0
+    outer loop
+      vertex 0 0 350
+      vertex 200 0 500
+      vertex 0 0 500
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex 200 200 0
+      vertex 0 200 0
+      vertex 0 200 250
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex 200 200 0
+      vertex 0 200 250
+      vertex 200 200 250
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex 50 200 250
+      vertex 0 200 250
+      vertex 0 200 350
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex 50 200 250
+      vertex 0 200 350
+      vertex 50 200 350
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex 200 200 250
+      vertex 150 200 250
+      vertex 150 200 350
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex 200 200 250
+      vertex 150 200 350
+      vertex 200 200 350
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex 200 200 350
+      vertex 0 200 350
+      vertex 0 200 500
+    endloop
+  endfacet
+  facet normal 0 1 0
+    outer loop
+      vertex 200 200 350
+      vertex 0 200 500
+      vertex 200 200 500
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex 50 0 250
+      vertex 150 0 250
+      vertex 150 200 250
+    endloop
+  endfacet
+  facet normal 0 0 1
+    outer loop
+      vertex 50 0 250
+      vertex 150 200 250
+      vertex 50 200 250
+    endloop
+  endfacet
+  facet normal 0 0 -1
+    outer loop
+      vertex 50 0 350
+      vertex 50 200 350
+      vertex 150 200 350
+    endloop
+  endfacet
+  facet normal 0 0 -1
+    outer loop
+      vertex 50 0 350
+      vertex 150 200 350
+      vertex 150 0 350
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex 50 0 250
+      vertex 50 200 250
+      vertex 50 200 350
+    endloop
+  endfacet
+  facet normal 1 0 0
+    outer loop
+      vertex 50 0 250
+      vertex 50 200 350
+      vertex 50 0 350
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex 150 0 250
+      vertex 150 200 350
+      vertex 150 200 250
+    endloop
+  endfacet
+  facet normal -1 0 0
+    outer loop
+      vertex 150 0 250
+      vertex 150 0 350
+      vertex 150 200 350
+    endloop
+  endfacet
+endsolid rect_200x200x500_hole

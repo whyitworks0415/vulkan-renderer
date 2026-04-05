@@ -1,0 +1,23 @@
+# Build output
+build/
+
+# Compiled shaders (SPIR-V)
+shaders/spv/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temp / logs
+*.log
+build_out.txt
+do_build.bat

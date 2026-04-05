@@ -1,0 +1,17 @@
+# CITY.obj map
+# The OBJ appears to be Z-up, so it works with the existing mesh transform path.
+# Use OBJ material colors by setting mesh color override to -1 -1 -1.
+
+name  CITY OBJ
+
+camera_pos    0.0  34.0  -110.0
+camera_yaw    90.0
+camera_pitch  -14.0
+
+floor  170.0  80
+
+# mesh  id    file             r   g   b   a   shin  spec  refl
+mesh  city  assets/CITY.obj  -1  -1  -1  1.0  40.0  0.2   0.0
+
+# object  mesh_id  x y z  scale  [instance_group]
+object  city  0.0  0.0  0.0  0.004

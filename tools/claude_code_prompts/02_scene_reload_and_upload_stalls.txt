@@ -1,0 +1,38 @@
+Task: remove avoidable load-time stalls from scene reload and buffer upload.
+
+Context:
+- `reloadScene()` currently calls `vkDeviceWaitIdle()` before rebuilding the scene.
+- `copyBuffer()` currently submits a one-time command buffer and then calls `vkQueueWaitIdle()` for each copy.
+- That means map switching is fully synchronous and blocks both CPU and GPU more than necessary.
+- Relevant files:
+  - src/VulkanApp.cpp
+  - src/VulkanApp.h
+
+Goal:
+- Reduce the visible hitch when switching maps.
+- Keep the implementation understandable and safe.
+
+Requested changes:
+1. Replace the per-copy `vkQueueWaitIdle()` path with a fence-based upload helper so one upload batch can wait once instead of waiting for the graphics queue after every buffer copy.
+2. Refactor vertex/index buffer creation so both uploads can be submitted as a single batch when rebuilding a scene.
+3. Refactor `reloadScene()` so scene CPU building happens before old GPU buffers are destroyed when possible.
+4. Minimize the scope of `vkDeviceWaitIdle()` or remove it if you can do so safely with existing synchronization.
+5. Keep failure recovery behavior intact: if a scene load fails, the app should still recover cleanly.
+
+Constraints:
+- Do not introduce undefined resource lifetime behavior.
+- Do not redesign the whole renderer or switch to a background thread in this part.
+- Preserve current scene-switch semantics from the user's point of view.
+
+Definition of done:
+- Release build succeeds.
+- Old path with repeated queue-idle waits is removed.
+- Upload code is clearly batched.
+- `reloadScene()` is structurally less blocking than before.
+- Any remaining forced waits are documented in code comments or final notes.
+
+Please include in your final response:
+- files changed
+- what synchronization strategy you used
+- remaining reasons scene reload may still hitch
+

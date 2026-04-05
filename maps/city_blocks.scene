@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  City Blocks
+#  직사각형 건물(rect_200x200x500)이 격자로 배치된 도시
+#  중심부: 아치형 건물(hole 버전)로 구성된 블록
+#
+#  rect_200x200x500      : 200x200x500 units → scale 0.02 = 4m×4m×10m 빌딩
+#  rect_200x200x500_hole : 동일 크기, 내부 통로 있는 빌딩
+#  10m 간격(even) = 건물 사이 6m 도로
+# ─────────────────────────────────────────────────────────────────────────────
+
+name  City Blocks
+
+camera_pos    0.0  1.8  -14.0
+camera_yaw    90.0
+camera_pitch  -8.0
+
+floor  160.0  60
+
+# mesh  id       file                               r     g     b    a   shin  spec  refl
+mesh  building  assets/rect_200x200x500.stl       0.72  0.72  0.78  1.0  32.0  0.4  0.05
+mesh  arch      assets/rect_200x200x500_hole.stl  0.78  0.68  0.60  1.0  32.0  0.4  0.05
+
+# 외곽 빌딩: 21x21, 10m 간격, 중앙 5x5 제외
+# scale 0.02 = 4m×4m×10m 빌딩
+grid  building  21  10.0   0  even_only  exclude 8 12 8 12  scale 0.02
+
+# 중앙 블록: 5x5 아치 빌딩, 안쪽 3x3 비우기
+grid  arch  21  10.0   1  range 8 12 8 12  hollow 9 11 9 11  scale 0.02

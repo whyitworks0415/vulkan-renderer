@@ -1,0 +1,27 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Pine Forest
+#  소나무(pine_tree)가 8m 간격 격자로 배치된 숲
+#  중앙 광장에 Einstein 흉상
+#
+#  pine_tree.stl  : Z[0~128] XY[-62~62] → scale 0.04 = 높이 5.1m, 직경 5m
+#  EinsteinBust   : Z[0~125]            → scale 0.016 = 높이 2.0m
+# ─────────────────────────────────────────────────────────────────────────────
+
+name  Pine Forest
+
+camera_pos    0.0  1.8  -12.0
+camera_yaw    90.0
+camera_pitch  -5.0
+
+floor  200.0  80
+
+# mesh  id     file                            r     g     b    a   shin  spec  refl
+mesh  tree   assets/pine_tree.stl           0.25  0.55  0.22  1.0   16.0  0.1   0.0
+mesh  bust   assets/EinsteinBustTongue.stl  0.85  0.78  0.68  1.0   48.0  0.5   0.05
+
+# 소나무 격자: 21x21, 8m 간격(even_only=4m 간격 실제배치), 중앙 5x5 제외
+# scale 0.04 = 나무 높이 ~5m
+grid  tree  21  8.0   0  even_only  exclude 8 12 8 12  scale 0.04
+
+# Einstein 흉상 중앙 배치
+object  bust  0.0  0.0  0.0  0.016

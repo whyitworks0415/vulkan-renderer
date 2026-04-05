@@ -1,0 +1,50 @@
+Task: add reliable baseline profiling for scene load, scene reload, and per-frame CPU work.
+
+Context:
+- This is a Vulkan renderer in C++17 on Windows.
+- Relevant files are:
+  - src/VulkanApp.cpp
+  - src/VulkanApp.h
+  - src/PerformanceStats.cpp
+  - src/PerformanceStats.h
+- Current overlay reports frame, FPS, CPU, RAM, GPU, and draw-call counters.
+- Current CPU number is system-wide CPU, not process CPU.
+- Current code does not show timing for `buildScene()`, `reloadScene()`, `createVertexBuffer()`, `createIndexBuffer()`, or mesh loading stages.
+
+Goal:
+- Add useful instrumentation so we can prove where load-time and runtime stalls actually come from.
+- Keep the UI simple and the logging readable.
+
+Requested changes:
+1. Add process-level CPU usage sampling in `PerformanceStats` in addition to the current system-wide number.
+2. Add lightweight timing for these stages:
+   - `loadScene(...)`
+   - mesh file loading inside `buildScene()`
+   - grid/object expansion inside `buildScene()`
+   - `createVertexBuffer()`
+   - `createIndexBuffer()`
+   - `reloadScene()` total time
+3. Store the last measured scene-load timings in a small struct owned by `VulkanApp`.
+4. Show those timings in the ImGui overlay in a compact section.
+5. Log a one-line summary to stdout after a scene loads, including map name, total load time, mesh parse time, CPU build time, and GPU upload time.
+
+Constraints:
+- Do not change render behavior yet.
+- Do not add external profiling libraries.
+- Keep per-frame overhead low.
+
+Definition of done:
+- Release build succeeds.
+- Overlay shows:
+  - process CPU
+  - last scene load total time
+  - mesh parse time
+  - scene build time
+  - vertex/index upload time
+- stdout prints a concise load summary after each map load or reload.
+
+Please include in your final response:
+- files changed
+- build result
+- what to check manually in the overlay
+

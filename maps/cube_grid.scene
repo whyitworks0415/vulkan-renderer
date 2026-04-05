@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Cube Grid Demo  –  matches Unity frustum/occlusion culling tutorial layout
+#  (https://devshovelinglife.tistory.com/340)
+#
+#  21x21 cell grid (2 m/cell):
+#    Outer  : 11x11 cubes at even col & even row (4 m spacing), center excluded
+#    Center : 5x5 hollow ring at cols/rows 8-12 (2 m spacing)
+#  Total  : 112 outer + 16 center = 128 cubes + floor
+# ─────────────────────────────────────────────────────────────────────────────
+
+name Cube Grid Demo
+
+# Camera starts just north of center block, looking south (+Z)
+camera_pos    0.0  1.8  -8.0
+camera_yaw    90.0
+camera_pitch  -5.0
+
+# Floor: 60x60 m, 60 subdivisions
+floor  60.0  60
+
+# mesh  id       stl_file           r     g     b     a   shininess  specular  reflect
+mesh  outer    assets/cube.stl   0.78  0.70  0.52  1.0   32.0  0.3  0.0
+mesh  center   assets/cube.stl   0.60  0.55  0.42  1.0   32.0  0.4  0.0
+
+# grid  mesh_id  cells  cell_size  instance_group  [modifiers]
+#   even_only        = only place at even col AND even row
+#   exclude c0 c1 r0 r1  = skip cells in [c0..c1] x [r0..r1]
+#   range   c0 c1 r0 r1  = only place cells in [c0..c1] x [r0..r1]
+#   hollow  c0 c1 r0 r1  = skip cells in inner [c0..c1] x [r0..r1]
+
+grid  outer   21  2.0  0  even_only  exclude  8 12  8 12
+grid  center  21  2.0  1  range  8 12  8 12   hollow  9 11  9 11

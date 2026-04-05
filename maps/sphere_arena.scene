@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Sphere Arena
+#  크고 작은 구체(sphere_r150)와 벽(rect_200x200x500)으로 구성된 경기장
+#  Occlusion Culling 효과를 잘 보여주는 구조
+#
+#  sphere_r150 : radius=150 units
+#    scale 0.007 → 반지름 1.05m (지름 2.1m) 소형 구체
+#    scale 0.013 → 반지름 1.95m (지름 3.9m) 대형 구체
+#  rect_200x200x500 : scale 0.018 → 3.6m×3.6m×9m 외벽
+# ─────────────────────────────────────────────────────────────────────────────
+
+name  Sphere Arena
+
+camera_pos    0.0  2.5  -10.0
+camera_yaw    90.0
+camera_pitch  -10.0
+
+floor  120.0  60
+
+# mesh  id       file                          r     g     b    a   shin  spec  refl
+mesh  sphere_s  assets/sphere_r150.stl       0.55  0.45  0.85  1.0  64.0  0.8  0.2
+mesh  sphere_l  assets/sphere_r150.stl       0.85  0.45  0.45  1.0  64.0  0.8  0.2
+mesh  wall      assets/rect_200x200x500.stl  0.60  0.62  0.65  1.0  32.0  0.3  0.05
+
+# 외곽 벽: 9x9 블록 테두리만 (hollow), 12m 간격
+# scale 0.018 = 3.6m×3.6m×9m 벽
+grid  wall  19  12.0   0  even_only  range 0 18 0 18  hollow 4 14 4 14  scale 0.018
+
+# 중간 소형 구체: 4m 간격 격자, 중앙 제외
+# scale 0.007 = 지름 2.1m
+grid  sphere_s  21  4.0   1  even_only  exclude 8 12 8 12  scale 0.007
+
+# 중앙 대형 구체: 5x5 블록 테두리
+# scale 0.013 = 지름 3.9m
+grid  sphere_l  21  4.0   2  range 8 12 8 12  hollow 9 11 9 11  scale 0.013
