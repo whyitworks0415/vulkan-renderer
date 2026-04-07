@@ -1688,6 +1688,23 @@ void VulkanApp::buildGizmoGeometry(uint32_t frame) {
     for (int i = 0; i < 4; ++i)
         addLine(nearR[i], farR[i], frustCol);
 
+    // ── LOD/원거리 거리 링 (수평 원, 32 세그먼트) ─────────────────────────────
+    constexpr int   RING_SEGS = 32;
+    constexpr float TWO_PI    = 6.28318530718f;
+    auto addRing = [&](float radius, float yHeight, glm::vec3 col) {
+        glm::vec3 center = glm::vec3(pos.x, yHeight, pos.z);
+        for (int i = 0; i < RING_SEGS; ++i) {
+            float a0 = TWO_PI * i       / RING_SEGS;
+            float a1 = TWO_PI * (i + 1) / RING_SEGS;
+            glm::vec3 p0 = center + glm::vec3(std::cos(a0)*radius, 0.f, std::sin(a0)*radius);
+            glm::vec3 p1 = center + glm::vec3(std::cos(a1)*radius, 0.f, std::sin(a1)*radius);
+            addLine(p0, p1, col);
+        }
+    };
+    addRing(18.f, pos.y, {1.0f, 0.60f, 0.05f}); // 주황 = LOD1 전환 거리 (18 m)
+    addRing(36.f, pos.y, {1.0f, 0.20f, 0.05f}); // 빨강 = LOD2 전환 거리 (36 m)
+    addRing(viewDistMax, pos.y, {0.2f, 0.8f, 1.0f}); // 하늘색 = 원거리 컬링 한계
+
     gizmoVertCount = static_cast<uint32_t>(verts.size());
     memcpy(gizmoVBMapped[frame], verts.data(), verts.size() * sizeof(Vertex));
 }
@@ -1929,7 +1946,7 @@ void VulkanApp::createTextureResources() {
 
 void VulkanApp::handleOptKeys() {
     // Use one-shot press detection via GLFW
-    static bool prevKeys[7] = {};
+    static bool prevKeys[9] = {};
     struct { int key; bool* flag; } binds[] = {
         { GLFW_KEY_1, &optFlags.frustumCulling   },
         { GLFW_KEY_2, &optFlags.lod              },
@@ -1937,8 +1954,10 @@ void VulkanApp::handleOptKeys() {
         { GLFW_KEY_4, &optFlags.backfaceCulling  },
         { GLFW_KEY_5, &optFlags.depthSort        },
         { GLFW_KEY_6, &optFlags.occlusionCulling },
+        { GLFW_KEY_7, &optFlags.viewDistCulling  },
+        { GLFW_KEY_8, &optFlags.smallCulling     },
     };
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 8; ++i) {
         bool pressed = (glfwGetKey(window, binds[i].key) == GLFW_PRESS);
         if (pressed && !prevKeys[i]) {
             *binds[i].flag = !*binds[i].flag;
@@ -2191,6 +2210,32 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
             || sphereInFrustum(frustum, obj.boundCenter, obj.boundRadius);
     };
 
+    auto isViewDistCulled = [&](const DrawObject& obj) -> bool {
+        if (!optFlags.viewDistCulling) return false;
+        float dist = glm::length(cullCam.position - obj.boundCenter) - obj.boundRadius;
+        return dist > viewDistMax;
+    };
+
+    auto isSmallObjCulled = [&](const DrawObject& obj) -> bool {
+        if (!optFlags.smallCulling) return false;
+        float dist = glm::length(cullCam.position - obj.boundCenter);
+        if (dist < 1e-4f) return false;
+        // 화면 반지름(픽셀) = boundRadius / dist * (screenH/2) / tan(fovY/2)
+        constexpr float kTanHalfFov = 0.57735f; // tan(30°) = tan(60°/2)
+        float projR = obj.boundRadius / dist
+                    * (scExtent.height * 0.5f) / kTanHalfFov;
+        return projR < smallCullPx;
+    };
+
+    // Ghost mode: 컬링된 오브젝트를 색상으로 표시하기 위해 컬링 상태를 통합 반환
+    auto ghostCullColor = [&](const DrawObject& obj) -> glm::vec4 {
+        // Returns {0,0,0,0} if not culled, else the tint color for the overlay
+        if (!isInsideFrustum(obj))    return {1.0f, 0.15f, 0.15f, 0.13f}; // 빨강: frustum 컬링
+        if (isViewDistCulled(obj))    return {1.0f, 0.55f, 0.05f, 0.13f}; // 주황: 원거리 컬링
+        if (isSmallObjCulled(obj))    return {1.0f, 0.95f, 0.05f, 0.13f}; // 노랑: 소형 컬링
+        return {0.f, 0.f, 0.f, 0.f}; // 컬링 없음
+    };
+
     auto isOccludedByQuery = [&](const DrawObject& obj, int idx) {
         return occlusionEnabled && !obj.skipOcclusion
             && idx < (int)occResults.size() && occResults[idx] == 0;
@@ -2221,10 +2266,12 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
     auto selectLod = [&](const DrawObject& obj,
                          uint32_t& idxStart,
                          uint32_t& idxCount,
-                         glm::mat4& model) -> bool {
+                         glm::mat4& model,
+                         int* outLodLevel = nullptr) -> bool {
         idxStart = obj.indexStart;
         idxCount = obj.indexCount;
         model    = obj.push.model;
+        int level = 0;
 
         if (optFlags.lod && obj.numLods > 0) {
             // Squared distance avoids sqrt; compare against squared thresholds
@@ -2235,12 +2282,15 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
                 idxStart = obj.lods[1].start;
                 idxCount = obj.lods[1].count;
                 model    = obj.lods[1].model;
+                level    = 2;
             } else if (dist2 > obj.lodDist[0] * obj.lodDist[0]) {
                 idxStart = obj.lods[0].start;
                 idxCount = obj.lods[0].count;
                 model    = obj.lods[0].model;
+                level    = 1;
             }
         }
+        if (outLodLevel) *outLodLevel = level;
         return true;
     };
 
@@ -2333,7 +2383,7 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
                 auto& obj = drawObjects[idx];
                 if (!canUseInstancingFor(obj)) continue;
                 if (obj.push.baseColor.w < 0.999f) continue;
-                if (!isInsideFrustum(obj)) {
+                if (!isInsideFrustum(obj) || isViewDistCulled(obj) || isSmallObjCulled(obj)) {
                     culledCount++;
                     continue;
                 }
@@ -2390,7 +2440,7 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
         if (optFlags.instancing && canUseInstancingFor(obj)) continue;
         if (obj.push.baseColor.w < 0.999f) continue;
 
-        if (!isInsideFrustum(obj)) {
+        if (!isInsideFrustum(obj) || isViewDistCulled(obj) || isSmallObjCulled(obj)) {
             culledCount++;
             continue;
         }
@@ -2403,13 +2453,23 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
         uint32_t  idxStart = obj.indexStart;
         uint32_t  idxCount = obj.indexCount;
         glm::mat4 model    = obj.push.model;
-        if (!selectLod(obj, idxStart, idxCount, model)) {
+        int lodLevel = 0;
+        if (!selectLod(obj, idxStart, idxCount, model, &lodLevel)) {
             culledCount++;
             continue;
         }
 
         PushConstants pc = obj.push;
         pc.model = model;
+
+        // Ghost mode: LOD 레벨에 따라 색상 구분 (LOD1=주황, LOD2=빨강)
+        if (ghostMode && optFlags.lod && lodLevel > 0) {
+            pc.textureIndex = -1.0f;
+            pc.baseColor = (lodLevel == 1)
+                ? glm::vec4(1.0f, 0.60f, 0.05f, 1.0f)   // 주황 = LOD1
+                : glm::vec4(1.0f, 0.20f, 0.05f, 1.0f);  // 빨강 = LOD2
+        }
+
         VkPipeline pipe = opaquePipelineFor(obj);
         if (pipe != boundOpaquePipe) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
@@ -2420,6 +2480,41 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
                            0, sizeof(PushConstants), &pc);
         vkCmdDrawIndexed(cmd, idxCount, 1, idxStart, 0, 0);
         renderedCount++;
+    }
+
+    // ── Ghost mode: 컬링된 오브젝트를 반투명 컬러 오버레이로 표시 ─────────────
+    //   frustum 컬링 → 빨강 / 원거리 컬링 → 주황 / 소형 컬링 → 노랑
+    if (ghostMode && (optFlags.frustumCulling || optFlags.viewDistCulling || optFlags.smallCulling)) {
+        // Sort back-to-front for correct alpha blending
+        std::vector<int> culledOverlay;
+        for (int idx : order) {
+            const auto& obj = drawObjects[idx];
+            if (obj.push.baseColor.w < 0.999f) continue;
+            if (optFlags.instancing && canUseInstancingFor(obj)) continue;
+            glm::vec4 col = ghostCullColor(obj);
+            if (col.a > 0.f) culledOverlay.push_back(idx);
+        }
+        if (!culledOverlay.empty()) {
+            glm::vec3 obsPos = observerCamera.position;
+            std::sort(culledOverlay.begin(), culledOverlay.end(), [&](int a, int b) {
+                return glm::distance(drawObjects[a].boundCenter, obsPos)
+                     > glm::distance(drawObjects[b].boundCenter, obsPos);
+            });
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineAlpha);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    pipelineLayout, 0, 1, &descSets[currentFrame], 0, nullptr);
+            boundOpaquePipe = VK_NULL_HANDLE;
+            for (int idx : culledOverlay) {
+                const auto& obj = drawObjects[idx];
+                PushConstants pc = obj.push;
+                pc.baseColor     = ghostCullColor(obj);
+                pc.textureIndex  = -1.0f;
+                vkCmdPushConstants(cmd, pipelineLayout,
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(PushConstants), &pc);
+                vkCmdDrawIndexed(cmd, obj.indexCount, 1, obj.indexStart, 0, 0);
+            }
+        }
     }
 
     if (!ghostMode && occlusionEnabled)
@@ -2830,6 +2925,8 @@ void VulkanApp::drawStatsOverlay() {
         row("4", "Backface Culling",  optFlags.backfaceCulling);
         row("5", "Front-Back Sort",   optFlags.depthSort);
         row("6", "Occlusion Culling", optFlags.occlusionCulling);
+        row("7", "View Dist Cull",    optFlags.viewDistCulling);
+        row("8", "Small Obj Cull",    optFlags.smallCulling);
         row("B", "Dark Floor",        darkFloor);
 
         // Ghost mode indicator

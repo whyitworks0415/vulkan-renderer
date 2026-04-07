@@ -275,6 +275,31 @@ static void processPrimitive(const tinygltf::Model&              model,
     obj.reverseFrontFace      = (determinant3x3(worldTransform) < 0.f);
 
     computeBoundSphereLocal(obj, bboxMin, bboxMax);
+
+    // ── LOD 자동 생성 (삼각형 12개 이상인 메시) ──────────────────────────────
+    //   LOD1: 2삼각형 간격 샘플 (~50%)  /  LOD2: 4삼각형 간격 샘플 (~25%)
+    const uint32_t triCount = idxCount / 3;
+    if (triCount >= 12) {
+        std::vector<uint32_t> orig(inds.begin() + idxStart,
+                                   inds.begin() + idxStart + idxCount);
+
+        uint32_t lod1Start = static_cast<uint32_t>(inds.size());
+        for (uint32_t t = 0; t < triCount; t += 2) {
+            inds.push_back(orig[t*3+0]); inds.push_back(orig[t*3+1]); inds.push_back(orig[t*3+2]);
+        }
+        uint32_t lod1Count = static_cast<uint32_t>(inds.size()) - lod1Start;
+
+        uint32_t lod2Start = static_cast<uint32_t>(inds.size());
+        for (uint32_t t = 0; t < triCount; t += 4) {
+            inds.push_back(orig[t*3+0]); inds.push_back(orig[t*3+1]); inds.push_back(orig[t*3+2]);
+        }
+        uint32_t lod2Count = static_cast<uint32_t>(inds.size()) - lod2Start;
+
+        obj.lods[0] = {lod1Start, lod1Count, worldTransform};
+        obj.lods[1] = {lod2Start, lod2Count, worldTransform};
+        obj.numLods  = 2;
+    }
+
     objects.push_back(obj);
 }
 

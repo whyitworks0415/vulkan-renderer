@@ -105,6 +105,12 @@ struct OptFlags {
 
     // 오클루전 컬링: GPU 오클루전 쿼리로 가려진 오브젝트 제거 → GPU 프래그먼트 감소
     bool occlusionCulling = false; // 키 6
+
+    // 원거리 컬링: 지정 거리(viewDistMax) 이상의 오브젝트 제거 → draw call 감소
+    bool viewDistCulling  = false; // 키 7
+
+    // 소형 오브젝트 컬링: 화면 투영 반지름이 임계값(smallCullPx) 미만인 오브젝트 제거
+    bool smallCulling     = false; // 키 8
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -321,8 +327,10 @@ private:
     };
     std::vector<InstGroupDef> instGroupDefs; // 그룹 ID 별 정의 목록
 
-    bool     darkFloor  = false;  // B 키: 바닥 어둡게 토글
-    float    lightYaw   = 0.0f;   // 스크롤 휠로 조정하는 방향광 수평 각도 (도)
+    bool     darkFloor   = false;  // B 키: 바닥 어둡게 토글
+    float    lightYaw    = 0.0f;   // 스크롤 휠로 조정하는 방향광 수평 각도 (도)
+    float    viewDistMax = 50.0f;  // 원거리 컬링 임계 거리 (m)
+    float    smallCullPx = 2.0f;   // 소형 오브젝트 컬링 임계 화면 반지름 (픽셀)
 
     // 전체화면 토글 상태 (F11)
     bool  isFullscreen = false;
@@ -357,7 +365,7 @@ private:
     float    lastFrameTime = 0.0f;      // 이전 프레임의 glfwGetTime() 값 (dt 계산용)
 
     // ── 기즈모 (ghost 모드에서 배치 카메라 위치·프러스텀 시각화) ─────────────
-    static constexpr int GIZMO_MAX_VERTS = 256;   // 기즈모 버텍스 최대 수
+    static constexpr int GIZMO_MAX_VERTS = 512;   // 기즈모 버텍스 최대 수
     std::vector<VkBuffer>       gizmoVBs;          // 프레임당 버텍스 버퍼
     std::vector<VkDeviceMemory> gizmoVBMemories;
     std::vector<void*>          gizmoVBMapped;     // 영구 매핑 포인터 (매 프레임 CPU 쓰기)
