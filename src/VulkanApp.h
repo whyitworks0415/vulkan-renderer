@@ -111,6 +111,9 @@ struct OptFlags {
 
     // 소형 오브젝트 컬링: 화면 투영 반지름이 임계값(smallCullPx) 미만인 오브젝트 제거
     bool smallCulling     = false; // 키 8
+
+    // 디퍼드 렌더링: G-Buffer 패스 → 조명 패스 분리 → 조명 계산 횟수 감소
+    bool deferredShading  = false; // 키 9
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -218,6 +221,32 @@ private:
     VkImage        depthImage       = VK_NULL_HANDLE;
     VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
     VkImageView    depthImageView   = VK_NULL_HANDLE;
+
+    // ── G-Buffer (디퍼드 렌더링) ─────────────────────────────────────────────
+    // GBuf0=RGBA8(albedo+specStr), GBuf1=RGBA16F(normal+shininess), GBuf2=RGBA16F(worldPos+valid)
+    // 각 채널 × MAX_FRAMES_IN_FLIGHT 개 (GPU 레이스 컨디션 방지)
+    VkImage        gbufImages[3][2]    = {};   // [channel][frame]
+    VkDeviceMemory gbufMemories[3][2]  = {};
+    VkImageView    gbufViews[3][2]     = {};
+    VkImage        gbufDepthImages[2]  = {};   // G-Buffer 전용 깊이 (프레임별)
+    VkDeviceMemory gbufDepthMemories[2]= {};
+    VkImageView    gbufDepthViews[2]   = {};
+    VkFramebuffer  gbufFramebuffers[2] = {};
+    VkRenderPass   gbufRenderPass      = VK_NULL_HANDLE; // G-Buffer 전용 렌더패스
+    VkSampler      gbufSampler         = VK_NULL_HANDLE; // G-Buffer 읽기용 샘플러
+
+    // 디퍼드 조명 패스 디스크립터 (G-Buffer 텍스처 → 조명 셰이더)
+    VkDescriptorSetLayout deferredDescSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool      deferredDescPool      = VK_NULL_HANDLE;
+    VkDescriptorSet       deferredDescSets[2]   = {};    // [frame]
+
+    // G-Buffer 지오메트리 파이프라인 (scene.vert + gbuffer.frag)
+    VkPipeline     gbufPipeline        = VK_NULL_HANDLE; // 백페이스 컬링 ON
+    VkPipeline     gbufPipelineNoCull  = VK_NULL_HANDLE; // 백페이스 컬링 OFF
+
+    // 디퍼드 조명 파이프라인 (fullscreen triangle + deferred_light.frag)
+    VkPipelineLayout deferredLightLayout   = VK_NULL_HANDLE;
+    VkPipeline       deferredLightPipeline = VK_NULL_HANDLE;
 
     std::vector<VkFramebuffer>   framebuffers;                  // 프레임버퍼 (스왑체인 이미지 수만큼)
     VkCommandPool                commandPool = VK_NULL_HANDLE;  // 커맨드 버퍼 풀
@@ -408,6 +437,9 @@ private:
     void createGizmoPipeline();          // 기즈모 렌더링 파이프라인 생성
     void createGizmoBuffers();           // 기즈모 버텍스 버퍼 (HOST_VISIBLE)
     void buildGizmoGeometry(uint32_t frame); // 매 프레임 기즈모 라인 버텍스 갱신
+
+    void createDeferredResources();  // G-Buffer 이미지·프레임버퍼·디스크립터 생성/재생성
+    void destroyDeferredResources(); // G-Buffer 이미지·프레임버퍼·디스크립터 해제
 
     void recreateSwapChain(); // 창 크기 변경 시 스왑체인 재생성
     void cleanupSwapChain();  // 스왑체인 관련 리소스 해제

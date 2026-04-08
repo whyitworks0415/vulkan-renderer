@@ -578,6 +578,7 @@ void VulkanApp::initVulkan() {
     createOcclusionQueryPool();
     createGizmoPipeline();
     createGizmoBuffers();
+    createDeferredResources();
     initImGui();
     perfStats.init();
 }
@@ -1093,6 +1094,174 @@ void VulkanApp::createGraphicsPipeline() {
     vkDestroyShaderModule(device, vertM,     nullptr);
     vkDestroyShaderModule(device, fragM,     nullptr);
     vkDestroyShaderModule(device, vertInstM, nullptr);
+
+    // ========== Deferred Rendering pipelines ==========
+
+    // 7. G-Buffer render pass (3 color + depth)
+    {
+        VkFormat depthFmt = findDepthFormat();
+        VkAttachmentDescription gbAtts[4] = {};
+        gbAtts[0].format         = VK_FORMAT_R8G8B8A8_UNORM;
+        gbAtts[0].samples        = VK_SAMPLE_COUNT_1_BIT;
+        gbAtts[0].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        gbAtts[0].storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+        gbAtts[0].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        gbAtts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        gbAtts[0].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        gbAtts[0].finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        gbAtts[1]        = gbAtts[0];
+        gbAtts[1].format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        gbAtts[2]        = gbAtts[1];
+        gbAtts[3].format         = depthFmt;
+        gbAtts[3].samples        = VK_SAMPLE_COUNT_1_BIT;
+        gbAtts[3].loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        gbAtts[3].storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        gbAtts[3].stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        gbAtts[3].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        gbAtts[3].initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+        gbAtts[3].finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference cRefs[3] = {
+            {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+            {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+            {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+        };
+        VkAttachmentReference dRef = {3, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription sp{};
+        sp.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sp.colorAttachmentCount    = 3;
+        sp.pColorAttachments       = cRefs;
+        sp.pDepthStencilAttachment = &dRef;
+        VkSubpassDependency dep{};
+        dep.srcSubpass    = VK_SUBPASS_EXTERNAL; dep.dstSubpass = 0;
+        dep.srcStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dep.srcAccessMask = 0;
+        dep.dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        VkRenderPassCreateInfo rpCI{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        rpCI.attachmentCount = 4; rpCI.pAttachments = gbAtts;
+        rpCI.subpassCount    = 1; rpCI.pSubpasses   = &sp;
+        rpCI.dependencyCount = 1; rpCI.pDependencies = &dep;
+        if (vkCreateRenderPass(device, &rpCI, nullptr, &gbufRenderPass) != VK_SUCCESS)
+            throw std::runtime_error("vkCreateRenderPass (G-Buffer) failed");
+    }
+
+    // 8. G-Buffer geometry pipelines (scene.vert + gbuffer.frag)
+    {
+        auto vertCode2    = readFile("shaders/spv/scene.vert.spv");
+        auto gbufFragCode = readFile("shaders/spv/gbuffer.frag.spv");
+        VkShaderModule vertM2    = createShaderModule(vertCode2);
+        VkShaderModule gbufFragM = createShaderModule(gbufFragCode);
+        VkPipelineShaderStageCreateInfo gbStages[2]{};
+        gbStages[0].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        gbStages[0].stage  = VK_SHADER_STAGE_VERTEX_BIT;
+        gbStages[0].module = vertM2; gbStages[0].pName = "main";
+        gbStages[1].sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        gbStages[1].stage  = VK_SHADER_STAGE_FRAGMENT_BIT;
+        gbStages[1].module = gbufFragM; gbStages[1].pName = "main";
+        VkPipelineColorBlendAttachmentState gbAtt{};
+        gbAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        gbAtt.blendEnable = VK_FALSE;
+        VkPipelineColorBlendAttachmentState gbAtts3[3] = {gbAtt, gbAtt, gbAtt};
+        VkPipelineColorBlendStateCreateInfo gbBlend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        gbBlend.attachmentCount = 3; gbBlend.pAttachments = gbAtts3;
+        VkPipelineDepthStencilStateCreateInfo gbDs{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        gbDs.depthTestEnable  = VK_TRUE;
+        gbDs.depthWriteEnable = VK_TRUE;
+        gbDs.depthCompareOp   = VK_COMPARE_OP_LESS;
+        VkGraphicsPipelineCreateInfo gbCI{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        gbCI.stageCount = 2; gbCI.pStages = gbStages;
+        gbCI.pVertexInputState   = &vertInput;
+        gbCI.pInputAssemblyState = &inputAssembly;
+        gbCI.pViewportState      = &viewportState;
+        gbCI.pRasterizationState = &raster;
+        gbCI.pMultisampleState   = &msaa;
+        gbCI.pDepthStencilState  = &gbDs;
+        gbCI.pColorBlendState    = &gbBlend;
+        gbCI.pDynamicState       = &dynState;
+        gbCI.layout              = pipelineLayout;
+        gbCI.renderPass          = gbufRenderPass;
+        gbCI.subpass             = 0;
+        raster.cullMode  = VK_CULL_MODE_BACK_BIT;
+        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gbCI, nullptr, &gbufPipeline) != VK_SUCCESS)
+            throw std::runtime_error("vkCreateGraphicsPipelines (gbuf) failed");
+        raster.cullMode = VK_CULL_MODE_NONE;
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gbCI, nullptr, &gbufPipelineNoCull) != VK_SUCCESS)
+            throw std::runtime_error("vkCreateGraphicsPipelines (gbuf no-cull) failed");
+        vkDestroyShaderModule(device, gbufFragM, nullptr);
+        vkDestroyShaderModule(device, vertM2,    nullptr);
+    }
+
+    // 9. Deferred descriptor set layout (set 1: 3 G-Buffer combined image samplers)
+    {
+        VkDescriptorSetLayoutBinding binds[3] = {};
+        for (int i = 0; i < 3; i++) {
+            binds[i].binding         = (uint32_t)i;
+            binds[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            binds[i].descriptorCount = 1;
+            binds[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        ci.bindingCount = 3; ci.pBindings = binds;
+        if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &deferredDescSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("vkCreateDescriptorSetLayout (deferred) failed");
+    }
+
+    // 10. Deferred lighting pipeline layout (set 0 = camUBO, set 1 = G-Buffer samplers)
+    {
+        VkDescriptorSetLayout sets[] = {descSetLayout, deferredDescSetLayout};
+        VkPipelineLayoutCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        ci.setLayoutCount = 2; ci.pSetLayouts = sets;
+        if (vkCreatePipelineLayout(device, &ci, nullptr, &deferredLightLayout) != VK_SUCCESS)
+            throw std::runtime_error("vkCreatePipelineLayout (deferred light) failed");
+    }
+
+    // 11. Deferred lighting pipeline (fullscreen triangle, writes to swapchain)
+    {
+        auto dLVCode = readFile("shaders/spv/deferred_light.vert.spv");
+        auto dLFCode = readFile("shaders/spv/deferred_light.frag.spv");
+        VkShaderModule dLVM = createShaderModule(dLVCode);
+        VkShaderModule dLFM = createShaderModule(dLFCode);
+        VkPipelineShaderStageCreateInfo dStages[2]{};
+        dStages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                      VK_SHADER_STAGE_VERTEX_BIT,   dLVM, "main", nullptr};
+        dStages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                      VK_SHADER_STAGE_FRAGMENT_BIT, dLFM, "main", nullptr};
+        VkPipelineVertexInputStateCreateInfo emptyVI{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineColorBlendAttachmentState dAtt{};
+        dAtt.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        dAtt.blendEnable = VK_FALSE;
+        VkPipelineColorBlendStateCreateInfo dBlend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        dBlend.attachmentCount = 1; dBlend.pAttachments = &dAtt;
+        VkPipelineDepthStencilStateCreateInfo dDs{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        dDs.depthTestEnable  = VK_FALSE;
+        dDs.depthWriteEnable = VK_FALSE;
+        raster.cullMode  = VK_CULL_MODE_NONE;
+        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        VkGraphicsPipelineCreateInfo dCI{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        dCI.stageCount = 2; dCI.pStages = dStages;
+        dCI.pVertexInputState   = &emptyVI;
+        dCI.pInputAssemblyState = &inputAssembly;
+        dCI.pViewportState      = &viewportState;
+        dCI.pRasterizationState = &raster;
+        dCI.pMultisampleState   = &msaa;
+        dCI.pDepthStencilState  = &dDs;
+        dCI.pColorBlendState    = &dBlend;
+        dCI.pDynamicState       = &dynState;
+        dCI.layout              = deferredLightLayout;
+        dCI.renderPass          = renderPass;
+        dCI.subpass             = 0;
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &dCI, nullptr, &deferredLightPipeline) != VK_SUCCESS)
+            throw std::runtime_error("vkCreateGraphicsPipelines (deferred light) failed");
+        vkDestroyShaderModule(device, dLVM, nullptr);
+        vkDestroyShaderModule(device, dLFM, nullptr);
+    }
+
 }
 
 // ?? Depth image ???????????????????????????????????????????????????????????????
@@ -1946,7 +2115,7 @@ void VulkanApp::createTextureResources() {
 
 void VulkanApp::handleOptKeys() {
     // Use one-shot press detection via GLFW
-    static bool prevKeys[9] = {};
+    static bool prevKeys[10] = {};
     struct { int key; bool* flag; } binds[] = {
         { GLFW_KEY_1, &optFlags.frustumCulling   },
         { GLFW_KEY_2, &optFlags.lod              },
@@ -1956,8 +2125,9 @@ void VulkanApp::handleOptKeys() {
         { GLFW_KEY_6, &optFlags.occlusionCulling },
         { GLFW_KEY_7, &optFlags.viewDistCulling  },
         { GLFW_KEY_8, &optFlags.smallCulling     },
+        { GLFW_KEY_9, &optFlags.deferredShading  },
     };
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 9; ++i) {
         bool pressed = (glfwGetKey(window, binds[i].key) == GLFW_PRESS);
         if (pressed && !prevKeys[i]) {
             *binds[i].flag = !*binds[i].flag;
@@ -2155,6 +2325,7 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
     vkBeginCommandBuffer(cmd, &begin);
 
     const bool occlusionEnabled = optFlags.occlusionCulling
+                               && !optFlags.deferredShading
                                && occlusionQueryPool != VK_NULL_HANDLE
                                && occQueryCount > 0;
     const Camera& renderCam = ghostMode ? observerCamera : camera;
@@ -2356,8 +2527,110 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
         vkCmdEndRenderPass(cmd);
     }
 
-    beginScenePass(descSets[currentFrame], graphicsPipelineNoCull);
-    VkPipeline boundOpaquePipe = VK_NULL_HANDLE;
+    VkPipeline boundOpaquePipe = VK_NULL_HANDLE; // hoisted: used in both branches
+    // ================================================================
+    // G-Buffer pass (Deferred Rendering)
+    // ================================================================
+    if (optFlags.deferredShading && gbufRenderPass != VK_NULL_HANDLE) {
+        std::array<VkClearValue, 4> gbClear{};
+        gbClear[0].color = {{0,0,0,0}};
+        gbClear[1].color = {{0,0,0,0}};
+        gbClear[2].color = {{0,0,0,0}};
+        gbClear[3].depthStencil = {1.0f, 0};
+
+        VkRenderPassBeginInfo gbRpBegin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        gbRpBegin.renderPass        = gbufRenderPass;
+        gbRpBegin.framebuffer       = gbufFramebuffers[currentFrame];
+        gbRpBegin.renderArea.extent = scExtent;
+        gbRpBegin.clearValueCount   = 4;
+        gbRpBegin.pClearValues      = gbClear.data();
+
+        vkCmdBeginRenderPass(cmd, &gbRpBegin, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+        vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offs);
+        vkCmdBindIndexBuffer(cmd, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+        VkPipeline gbCurPipe = VK_NULL_HANDLE;
+        VkPipeline gbDefault = optFlags.backfaceCulling ? gbufPipeline : gbufPipelineNoCull;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gbDefault);
+        gbCurPipe = gbDefault;
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipelineLayout, 0, 1, &descSets[currentFrame], 0, nullptr);
+
+        for (int idx : order) {
+            const auto& obj = drawObjects[idx];
+            if (obj.push.baseColor.w < 0.999f) continue; // skip transparent
+            if (!isInsideFrustum(obj) || isViewDistCulled(obj) || isSmallObjCulled(obj)) continue;
+
+            uint32_t  gbIdxStart = obj.indexStart;
+            uint32_t  gbIdxCount = obj.indexCount;
+            glm::mat4 gbModel    = obj.push.model;
+            if (!selectLod(obj, gbIdxStart, gbIdxCount, gbModel)) continue;
+
+            PushConstants gbPc = obj.push;
+            gbPc.model = gbModel;
+
+            VkPipeline wantPipe = (!optFlags.backfaceCulling || obj.twoSided || obj.reverseFrontFace)
+                                  ? gbufPipelineNoCull : gbufPipeline;
+            if (wantPipe != gbCurPipe) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, wantPipe);
+                gbCurPipe = wantPipe;
+            }
+            vkCmdPushConstants(cmd, pipelineLayout,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(PushConstants), &gbPc);
+            vkCmdDrawIndexed(cmd, gbIdxCount, 1, gbIdxStart, 0, 0);
+        }
+        vkCmdEndRenderPass(cmd);
+
+        // Transition G-Buffer images: COLOR_ATTACHMENT_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
+        std::array<VkImageMemoryBarrier, 3> gbBarriers{};
+        for (int i = 0; i < 3; i++) {
+            gbBarriers[i].sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            gbBarriers[i].oldLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            gbBarriers[i].newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            gbBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            gbBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            gbBarriers[i].image               = gbufImages[i][currentFrame];
+            gbBarriers[i].subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            gbBarriers[i].srcAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            gbBarriers[i].dstAccessMask       = VK_ACCESS_SHADER_READ_BIT;
+        }
+        vkCmdPipelineBarrier(cmd,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+            0, 0, nullptr, 0, nullptr,
+            3, gbBarriers.data());
+    }
+
+    // ================================================================
+    // Main render pass (deferred lighting quad OR forward scene)
+    // ================================================================
+    if (optFlags.deferredShading && gbufRenderPass != VK_NULL_HANDLE) {
+        // Begin main render pass: clear + deferred fullscreen triangle
+        vkCmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, deferredLightPipeline);
+        VkDescriptorSet dSets[] = {descSets[currentFrame], deferredDescSets[currentFrame]};
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                deferredLightLayout, 0, 2, dSets, 0, nullptr);
+        vkCmdDraw(cmd, 3, 1, 0, 0);  // fullscreen triangle (no VB needed)
+
+        // Bind VBs so the subsequent transparent/ghost/gizmo passes can draw normally
+        vkCmdBindVertexBuffers(cmd, 0, 1, vbs, offs);
+        vkCmdBindIndexBuffer(cmd, indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelineNoCull);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipelineLayout, 0, 1, &descSets[currentFrame], 0, nullptr);
+
+        renderedCount       = (int)drawObjects.size();
+        culledCount         = 0;
+        instancedGroupCount = 0;
+     } else {
+        beginScenePass(descSets[currentFrame], graphicsPipelineNoCull);
 
     renderedCount       = 0;
     culledCount         = 0;
@@ -2481,6 +2754,8 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
         vkCmdDrawIndexed(cmd, idxCount, 1, idxStart, 0, 0);
         renderedCount++;
     }
+
+    } // end forward-only block
 
     // ── Ghost mode: 컬링된 오브젝트를 반투명 컬러 오버레이로 표시 ─────────────
     //   frustum 컬링 → 빨강 / 원거리 컬링 → 주황 / 소형 컬링 → 노랑
@@ -2636,7 +2911,137 @@ void VulkanApp::drawFrame() {
 // ?????????????????????????????????????????????????????????????????????????????
 //  Swapchain recreation
 // ?????????????????????????????????????????????????????????????????????????????
+
+// =============================================================================
+//  Deferred rendering resources
+// =============================================================================
+void VulkanApp::createDeferredResources() {
+    // G-Buffer sampler (NEAREST, CLAMP_TO_EDGE) – created once
+    if (gbufSampler == VK_NULL_HANDLE) {
+        VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        si.magFilter    = VK_FILTER_NEAREST;
+        si.minFilter    = VK_FILTER_NEAREST;
+        si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(device, &si, nullptr, &gbufSampler) != VK_SUCCESS)
+            throw std::runtime_error("vkCreateSampler (gbuf) failed");
+    }
+
+    // Per-frame G-Buffer color images + depth images + framebuffers
+    VkFormat depthFmt = findDepthFormat();
+    VkFormat fmts[3]  = {VK_FORMAT_R8G8B8A8_UNORM,
+                         VK_FORMAT_R16G16B16A16_SFLOAT,
+                         VK_FORMAT_R16G16B16A16_SFLOAT};
+
+    for (int f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+        // 3 color G-Buffer images
+        for (int c = 0; c < 3; ++c) {
+            createImage(scExtent.width, scExtent.height, fmts[c],
+                        VK_IMAGE_TILING_OPTIMAL,
+                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                        gbufImages[c][f], gbufMemories[c][f]);
+            gbufViews[c][f] = createImageView(gbufImages[c][f], fmts[c],
+                                              VK_IMAGE_ASPECT_COLOR_BIT);
+        }
+
+        // G-Buffer depth image
+        createImage(scExtent.width, scExtent.height, depthFmt,
+                    VK_IMAGE_TILING_OPTIMAL,
+                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                    gbufDepthImages[f], gbufDepthMemories[f]);
+        gbufDepthViews[f] = createImageView(gbufDepthImages[f], depthFmt,
+                                            VK_IMAGE_ASPECT_DEPTH_BIT);
+
+        // G-Buffer framebuffer: 3 color + 1 depth
+        VkImageView atts[4] = {
+            gbufViews[0][f], gbufViews[1][f], gbufViews[2][f], gbufDepthViews[f]
+        };
+        VkFramebufferCreateInfo fbCI{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        fbCI.renderPass      = gbufRenderPass;
+        fbCI.attachmentCount = 4;
+        fbCI.pAttachments    = atts;
+        fbCI.width           = scExtent.width;
+        fbCI.height          = scExtent.height;
+        fbCI.layers          = 1;
+        if (vkCreateFramebuffer(device, &fbCI, nullptr, &gbufFramebuffers[f]) != VK_SUCCESS)
+            throw std::runtime_error("vkCreateFramebuffer (G-Buffer) failed");
+    }
+
+    // Descriptor pool + sets for deferred lighting pass
+    if (deferredDescPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device, deferredDescPool, nullptr);
+        deferredDescPool = VK_NULL_HANDLE;
+    }
+    VkDescriptorPoolSize poolSz{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                3 * MAX_FRAMES_IN_FLIGHT};
+    VkDescriptorPoolCreateInfo poolCI{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    poolCI.maxSets       = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+    poolCI.poolSizeCount = 1;
+    poolCI.pPoolSizes    = &poolSz;
+    if (vkCreateDescriptorPool(device, &poolCI, nullptr, &deferredDescPool) != VK_SUCCESS)
+        throw std::runtime_error("vkCreateDescriptorPool (deferred) failed");
+
+    VkDescriptorSetLayout layouts[2] = {deferredDescSetLayout, deferredDescSetLayout};
+    VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocInfo.descriptorPool     = deferredDescPool;
+    allocInfo.descriptorSetCount = (uint32_t)MAX_FRAMES_IN_FLIGHT;
+    allocInfo.pSetLayouts        = layouts;
+    if (vkAllocateDescriptorSets(device, &allocInfo, deferredDescSets) != VK_SUCCESS)
+        throw std::runtime_error("vkAllocateDescriptorSets (deferred) failed");
+
+    // Update descriptor sets to point at the G-Buffer image views
+    for (int f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+        VkDescriptorImageInfo imgInfos[3] = {
+            {gbufSampler, gbufViews[0][f], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {gbufSampler, gbufViews[1][f], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {gbufSampler, gbufViews[2][f], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        };
+        VkWriteDescriptorSet writes[3] = {};
+        for (int i = 0; i < 3; i++) {
+            writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet          = deferredDescSets[f];
+            writes[i].dstBinding      = (uint32_t)i;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].pImageInfo      = &imgInfos[i];
+        }
+        vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+    }
+}
+
+void VulkanApp::destroyDeferredResources() {
+    if (deferredDescPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(device, deferredDescPool, nullptr);
+        deferredDescPool = VK_NULL_HANDLE;
+    }
+    for (int f = 0; f < MAX_FRAMES_IN_FLIGHT; ++f) {
+        if (gbufFramebuffers[f] != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(device, gbufFramebuffers[f], nullptr);
+            gbufFramebuffers[f] = VK_NULL_HANDLE;
+        }
+        for (int c = 0; c < 3; ++c) {
+            vkDestroyImageView(device, gbufViews[c][f],    nullptr);
+            vkDestroyImage    (device, gbufImages[c][f],   nullptr);
+            vkFreeMemory      (device, gbufMemories[c][f], nullptr);
+            gbufViews[c][f]    = VK_NULL_HANDLE;
+            gbufImages[c][f]   = VK_NULL_HANDLE;
+            gbufMemories[c][f] = VK_NULL_HANDLE;
+        }
+        vkDestroyImageView(device, gbufDepthViews[f],    nullptr);
+        vkDestroyImage    (device, gbufDepthImages[f],   nullptr);
+        vkFreeMemory      (device, gbufDepthMemories[f], nullptr);
+        gbufDepthViews[f]    = VK_NULL_HANDLE;
+        gbufDepthImages[f]   = VK_NULL_HANDLE;
+        gbufDepthMemories[f] = VK_NULL_HANDLE;
+    }
+}
+
 void VulkanApp::cleanupSwapChain() {
+    destroyDeferredResources();
     vkDestroyImageView(device, depthImageView, nullptr);
     vkDestroyImage(device, depthImage, nullptr);
     vkFreeMemory(device, depthImageMemory, nullptr);
@@ -2657,6 +3062,7 @@ void VulkanApp::recreateSwapChain() {
     createImageViews();
     createDepthResources();
     createFramebuffers();
+    createDeferredResources();
 }
 
 // ?????????????????????????????????????????????????????????????????????????????
@@ -2772,6 +3178,16 @@ void VulkanApp::cleanup() {
     vkDestroyPipeline(device, graphicsPipelineInstNoCull, nullptr);
     vkDestroyPipelineLayout(device, pipelineLayout,         nullptr);
     vkDestroyPipelineLayout(device, instancePipelineLayout, nullptr);
+    // Deferred rendering (persistent resources)
+    vkDestroyPipeline(device, gbufPipeline,          nullptr);
+    vkDestroyPipeline(device, gbufPipelineNoCull,    nullptr);
+    vkDestroyPipeline(device, deferredLightPipeline, nullptr);
+    vkDestroyPipelineLayout(device, deferredLightLayout, nullptr);
+    vkDestroyDescriptorSetLayout(device, deferredDescSetLayout, nullptr);
+    if (gbufRenderPass != VK_NULL_HANDLE)
+        vkDestroyRenderPass(device, gbufRenderPass, nullptr);
+    if (gbufSampler    != VK_NULL_HANDLE)
+        vkDestroySampler(device, gbufSampler, nullptr);
     vkDestroyRenderPass(device, renderPass, nullptr);
     vkDestroyDevice(device, nullptr);
     if (kEnableValidation) DestroyDebugMessenger(instance, debugMessenger);
@@ -2927,6 +3343,7 @@ void VulkanApp::drawStatsOverlay() {
         row("6", "Occlusion Culling", optFlags.occlusionCulling);
         row("7", "View Dist Cull",    optFlags.viewDistCulling);
         row("8", "Small Obj Cull",    optFlags.smallCulling);
+        row("9", "Deferred Shading",  optFlags.deferredShading);
         row("B", "Dark Floor",        darkFloor);
 
         // Ghost mode indicator

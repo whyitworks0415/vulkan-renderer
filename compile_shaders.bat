@@ -25,4 +25,16 @@ echo Compiling gizmo.frag ...
 glslc shaders/gizmo.frag -o shaders/spv/gizmo.frag.spv
 if errorlevel 1 ( echo FAILED: gizmo.frag & exit /b 1 )
 
+echo Compiling gbuffer.frag ...
+glslc shaders/gbuffer.frag -o shaders/spv/gbuffer.frag.spv
+if errorlevel 1 ( echo FAILED: gbuffer.frag & exit /b 1 )
+
+echo Compiling deferred_light.vert ...
+glslc shaders/deferred_light.vert -o shaders/spv/deferred_light.vert.spv
+if errorlevel 1 ( echo FAILED: deferred_light.vert & exit /b 1 )
+
+echo Compiling deferred_light.frag ...
+glslc shaders/deferred_light.frag -o shaders/spv/deferred_light.frag.spv
+if errorlevel 1 ( echo FAILED: deferred_light.frag & exit /b 1 )
+
 echo All shaders compiled successfully.
