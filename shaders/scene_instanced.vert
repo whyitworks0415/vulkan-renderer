@@ -31,7 +31,8 @@ layout(push_constant) uniform PushConstants {
     float shininess;
     float specularStrength;
     float reflectStrength;
-    float textureIndex;    // -1.0 = no texture, >= 0.0 = index into textures[]
+    float textureIndex;
+    vec4  emissive;        // rgb=emissive color, a=emissive luminance
 } pc;
 
 void main() {

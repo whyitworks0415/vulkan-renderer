@@ -303,6 +303,8 @@ void VulkanApp::buildScene() {
         throw std::runtime_error("Failed to load GLTF scene: " + currentMapFile);
     lastLoadTiming.sceneParseMs = elapsed(t_parse);
 
+    sceneLights = gDesc.lights; // KHR_lights_punctual 조명 저장
+
     camera.position = gDesc.cameraPos;
     camera.yaw      = gDesc.cameraYaw;
     camera.pitch    = gDesc.cameraPitch;
@@ -874,10 +876,17 @@ void VulkanApp::createDescriptorSetLayout() {
     samplerBinding.descriptorCount = MAX_TEXTURES;
     samplerBinding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    VkDescriptorSetLayoutBinding bindings[] = {uboBinding, samplerBinding};
+    // Set 0, binding 2 : SceneLightUBO (GLTF 동적 조명)
+    VkDescriptorSetLayoutBinding lightBinding{};
+    lightBinding.binding         = 2;
+    lightBinding.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    lightBinding.descriptorCount = 1;
+    lightBinding.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutBinding bindings[] = {uboBinding, samplerBinding, lightBinding};
 
     VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    ci.bindingCount = 2;
+    ci.bindingCount = 3;
     ci.pBindings    = bindings;
     if (vkCreateDescriptorSetLayout(device, &ci, nullptr, &descSetLayout) != VK_SUCCESS)
         throw std::runtime_error("vkCreateDescriptorSetLayout failed");
@@ -1491,23 +1500,36 @@ void VulkanApp::createSceneBuffers() {
 
 // ?? Uniform buffers ???????????????????????????????????????????????????????????
 void VulkanApp::createUniformBuffers() {
-    VkDeviceSize size = sizeof(CameraUBO);
+    VkDeviceSize camSize   = sizeof(CameraUBO);
+    VkDeviceSize lightSize = sizeof(SceneLightUBO);
+
     uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
     uniformBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
     uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
     cullUniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
     cullUniformBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
     cullUniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+    sceneLightUBOs.resize(MAX_FRAMES_IN_FLIGHT);
+    sceneLightUBOMemories.resize(MAX_FRAMES_IN_FLIGHT);
+    sceneLightUBOMapped.resize(MAX_FRAMES_IN_FLIGHT);
+
     for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        createBuffer(size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        createBuffer(camSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      uniformBuffers[i], uniformBufferMemories[i]);
-        vkMapMemory(device, uniformBufferMemories[i], 0, size, 0, &uniformBuffersMapped[i]);
+        vkMapMemory(device, uniformBufferMemories[i], 0, camSize, 0, &uniformBuffersMapped[i]);
 
-        createBuffer(size, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        createBuffer(camSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                      cullUniformBuffers[i], cullUniformBufferMemories[i]);
-        vkMapMemory(device, cullUniformBufferMemories[i], 0, size, 0, &cullUniformBuffersMapped[i]);
+        vkMapMemory(device, cullUniformBufferMemories[i], 0, camSize, 0, &cullUniformBuffersMapped[i]);
+
+        createBuffer(lightSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                     sceneLightUBOs[i], sceneLightUBOMemories[i]);
+        vkMapMemory(device, sceneLightUBOMemories[i], 0, lightSize, 0, &sceneLightUBOMapped[i]);
+        // 초기값: 조명 없음, fallback 모드
+        memset(sceneLightUBOMapped[i], 0, lightSize);
     }
 }
 
@@ -1518,7 +1540,7 @@ void VulkanApp::createDescriptorPool() {
     uint32_t setCount = 2u * (uint32_t)MAX_FRAMES_IN_FLIGHT;
     VkDescriptorPoolSize poolSizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-         setCount},
+         setCount * 2},  // binding 0 (camera) + binding 2 (scene lights)
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          MAX_TEXTURES * setCount},
     };
@@ -1571,8 +1593,17 @@ void VulkanApp::createDescriptorSets() {
         texWrite.descriptorCount = MAX_TEXTURES;
         texWrite.pImageInfo      = defaultImgInfos.data();
 
-        VkWriteDescriptorSet writes[] = {uboWrite, texWrite};
-        vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+        // binding 2 : scene light UBO
+        VkDescriptorBufferInfo lightBufInfo{sceneLightUBOs[i], 0, sizeof(SceneLightUBO)};
+        VkWriteDescriptorSet lightWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        lightWrite.dstSet          = descSets[i];
+        lightWrite.dstBinding      = 2;
+        lightWrite.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        lightWrite.descriptorCount = 1;
+        lightWrite.pBufferInfo     = &lightBufInfo;
+
+        VkWriteDescriptorSet writes[] = {uboWrite, texWrite, lightWrite};
+        vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
 
         // cull descriptor set (binding 0 only; binding 1 also needed for valid layout)
         VkDescriptorBufferInfo cullBufInfo{cullUniformBuffers[i], 0, sizeof(CameraUBO)};
@@ -1590,8 +1621,16 @@ void VulkanApp::createDescriptorSets() {
         cullTexWrite.descriptorCount = MAX_TEXTURES;
         cullTexWrite.pImageInfo      = defaultImgInfos.data();
 
-        VkWriteDescriptorSet cullWrites[] = {cullUboWrite, cullTexWrite};
-        vkUpdateDescriptorSets(device, 2, cullWrites, 0, nullptr);
+        VkDescriptorBufferInfo cullLightBufInfo{sceneLightUBOs[i], 0, sizeof(SceneLightUBO)};
+        VkWriteDescriptorSet cullLightWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        cullLightWrite.dstSet          = cullDescSets[i];
+        cullLightWrite.dstBinding      = 2;
+        cullLightWrite.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        cullLightWrite.descriptorCount = 1;
+        cullLightWrite.pBufferInfo     = &cullLightBufInfo;
+
+        VkWriteDescriptorSet cullWrites[] = {cullUboWrite, cullTexWrite, cullLightWrite};
+        vkUpdateDescriptorSets(device, 3, cullWrites, 0, nullptr);
     }
 }
 
@@ -2318,6 +2357,29 @@ void VulkanApp::updateUniformBuffer(uint32_t frameIndex) {
 
     writeCameraUbo(uniformBuffersMapped[frameIndex], renderCam);
     writeCameraUbo(cullUniformBuffersMapped[frameIndex], cullCam);
+
+    // ── SceneLightUBO 갱신 ────────────────────────────────────────────────────
+    SceneLightUBO lightUbo{};
+    lightUbo.useSceneLights = (!sceneLights.empty() && sceneLightsOn) ? 1 : 0;
+    lightUbo.ambientOn      = ambientOn  ? 1 : 0;
+    lightUbo.emissiveOn     = emissiveOn ? 1 : 0;
+
+    int gpuIdx = 0;
+    for (const SceneLight& sl : sceneLights) {
+        if (gpuIdx >= MAX_SCENE_LIGHTS) break;
+        GpuSceneLight& gl = lightUbo.lights[gpuIdx++];
+        if (sl.type == SceneLight::Directional) {
+            gl.posRange  = glm::vec4(sl.direction, 0.f);   // direction in xyz
+            gl.dirType   = glm::vec4(sl.direction, 1.f);   // type=1
+        } else {
+            gl.posRange  = glm::vec4(sl.position, sl.range);
+            gl.dirType   = glm::vec4(sl.direction, (sl.type == SceneLight::Spot) ? 2.f : 0.f);
+        }
+        gl.colorEnab = glm::vec4(sl.color * sl.intensity,
+                                 (sceneLightsOn && sl.enabled) ? 1.f : 0.f);
+    }
+    lightUbo.numLights = gpuIdx;
+    memcpy(sceneLightUBOMapped[frameIndex], &lightUbo, sizeof(lightUbo));
 }
 
 void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
@@ -3143,6 +3205,10 @@ void VulkanApp::cleanup() {
         vkFreeMemory(device, uniformBufferMemories[i], nullptr);
         vkDestroyBuffer(device, cullUniformBuffers[i], nullptr);
         vkFreeMemory(device, cullUniformBufferMemories[i], nullptr);
+        if (i < (int)sceneLightUBOs.size()) {
+            vkDestroyBuffer(device, sceneLightUBOs[i], nullptr);
+            vkFreeMemory(device, sceneLightUBOMemories[i], nullptr);
+        }
     }
     vkDestroyDescriptorPool(device, descPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
@@ -3270,8 +3336,8 @@ void VulkanApp::drawStatsOverlay() {
         ImGuiWindowFlags_NoMove       |
         ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoNav        |
-        ImGuiWindowFlags_NoInputs;
+        ImGuiWindowFlags_NoNav;
+        // NoInputs 제거: 조명 체크박스 클릭 허용
 
     ImGui::SetNextWindowSize({220, 0}, ImGuiCond_Always);
 
@@ -3345,6 +3411,23 @@ void VulkanApp::drawStatsOverlay() {
         row("8", "Small Obj Cull",    optFlags.smallCulling);
         row("9", "Deferred Shading",  optFlags.deferredShading);
         row("B", "Dark Floor",        darkFloor);
+
+        // ── Lighting controls ─────────────────────────────────────────────────
+        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+        ImGui::TextColored({0.85f, 0.85f, 1.0f, 1.0f}, "Lighting");
+        ImGui::Separator();
+        ImGui::Checkbox("Scene Lights", &sceneLightsOn);
+        ImGui::Checkbox("Ambient",      &ambientOn);
+        ImGui::Checkbox("Emissive",     &emissiveOn);
+        if (!sceneLights.empty()) {
+            ImGui::Spacing();
+            ImGui::TextDisabled("GLTF Lights (%d)", (int)sceneLights.size());
+            for (int li = 0; li < (int)sceneLights.size() && li < MAX_SCENE_LIGHTS; ++li) {
+                // ImGui ID 충돌 방지: name + index
+                std::string label = sceneLights[li].name + "##L" + std::to_string(li);
+                ImGui::Checkbox(label.c_str(), &sceneLights[li].enabled);
+            }
+        }
 
         // Ghost mode indicator
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();

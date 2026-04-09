@@ -22,11 +22,12 @@ layout(set = 0, binding = 0) uniform CameraUBO {
 // Per-draw model matrix + material packed in push constants (128 bytes max)
 layout(push_constant) uniform PushConstants {
     mat4  model;
-    vec4  baseColor;        // rgb + unused
+    vec4  baseColor;
     float shininess;
     float specularStrength;
     float reflectStrength;
-    float textureIndex;     // -1.0 = no texture, >= 0.0 = index into textures[]
+    float textureIndex;
+    vec4  emissive;         // rgb=emissive color, a=emissive luminance
 } pc;
 
 void main() {

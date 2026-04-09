@@ -42,13 +42,37 @@ struct CameraUBO {
 };
 
 // 오브젝트별 상수 – vkCmdPushConstants 로 draw call 마다 갱신 (빠른 전달)
+// 총 112 bytes (64+16+16+16) — Vulkan 최소 보장 128 bytes 이내
 struct PushConstants {
-    glm::mat4 model;            // 모델 행렬 (로컬 → 월드 공간)
-    glm::vec4 baseColor;        // 기본 색상 (RGBA)
-    float     shininess;        // 퐁 반사 집중도 (클수록 하이라이트가 좁고 강함)
-    float     specularStrength; // 스페큘러 강도 (0 = 무광, 1 = 완전 반사)
-    float     reflectStrength;  // 반사 강도 (현재 셰이더 미사용)
-    float     textureIndex;     // 텍스처 인덱스 (-1.0 = 텍스처 없음)
+    glm::mat4 model;            // 모델 행렬 (로컬 → 월드 공간)            [offset   0, 64 B]
+    glm::vec4 baseColor;        // 기본 색상 (RGBA)                        [offset  64, 16 B]
+    float     shininess;        // 퐁 반사 집중도 (클수록 하이라이트 좁음)   [offset  80,  4 B]
+    float     specularStrength; // 스페큘러 강도 (0 = 무광)                 [offset  84,  4 B]
+    float     reflectStrength;  // 반사 강도 (Fresnel 스케일)               [offset  88,  4 B]
+    float     textureIndex;     // 텍스처 인덱스 (-1.0 = 없음)              [offset  92,  4 B]
+    glm::vec4 emissive;         // RGB=발광 색상, A=발광 강도(G-Buffer 패킹용) [offset 96, 16 B]
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  SceneLightUBO  –  GPU 씬 조명 배열 (set 0, binding 2)
+//  GLTF KHR_lights_punctual 에서 추출한 최대 8개 동적 조명
+//  useSceneLights == 0 이면 셰이더 내 하드코딩 fallback 조명 사용
+// ─────────────────────────────────────────────────────────────────────────────
+struct GpuSceneLight {
+    // pt/spot: xyz=position, w=range(0=inf)  /  dir: xyz=direction, w=0
+    alignas(16) glm::vec4 posRange;
+    // xyz=spot direction (Spot type), w=type (0=Point, 1=Dir, 2=Spot)
+    alignas(16) glm::vec4 dirType;
+    // xyz=color*intensity, w=enabled (0.0 or 1.0)
+    alignas(16) glm::vec4 colorEnab;
+};
+static constexpr int MAX_SCENE_LIGHTS = 8;
+struct SceneLightUBO {
+    int32_t numLights;                       // 실제 조명 수
+    int32_t useSceneLights;                  // 1=GLTF 조명, 0=fallback 하드코딩
+    int32_t ambientOn;                       // 환경광 ON/OFF
+    int32_t emissiveOn;                      // 발광 재질 ON/OFF
+    GpuSceneLight lights[MAX_SCENE_LIGHTS];  // offset 16 (16-byte aligned) ✓
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -360,6 +384,16 @@ private:
     float    lightYaw    = 0.0f;   // 스크롤 휠로 조정하는 방향광 수평 각도 (도)
     float    viewDistMax = 50.0f;  // 원거리 컬링 임계 거리 (m)
     float    smallCullPx = 2.0f;   // 소형 오브젝트 컬링 임계 화면 반지름 (픽셀)
+
+    // ── 씬 조명 (GLTF KHR_lights_punctual) ──────────────────────────────────
+    std::vector<SceneLight>      sceneLights;        // buildScene() 에서 채워짐
+    bool   sceneLightsOn = true;  // 씬 조명 전체 ON/OFF
+    bool   ambientOn     = true;  // 환경광 ON/OFF
+    bool   emissiveOn    = true;  // 발광 재질 ON/OFF
+
+    std::vector<VkBuffer>        sceneLightUBOs;
+    std::vector<VkDeviceMemory>  sceneLightUBOMemories;
+    std::vector<void*>           sceneLightUBOMapped;
 
     // 전체화면 토글 상태 (F11)
     bool  isFullscreen = false;

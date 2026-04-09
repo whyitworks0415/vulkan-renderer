@@ -8,6 +8,23 @@ struct Vertex;
 struct DrawObject;
 
 // ─────────────────────────────────────────────────────────────────────────────
+//  SceneLight  –  GLTF KHR_lights_punctual 에서 추출한 씬 조명 하나
+// ─────────────────────────────────────────────────────────────────────────────
+struct SceneLight {
+    enum Type { Point = 0, Directional = 1, Spot = 2 };
+    Type      type          = Point;
+    glm::vec3 position      = {0.f, 0.f, 0.f}; // 월드 공간 (Point/Spot)
+    glm::vec3 direction     = {0.f,-1.f, 0.f};  // 월드 공간 (Directional/Spot, 정규화)
+    glm::vec3 color         = {1.f, 1.f, 1.f};
+    float     intensity     = 1.f;
+    float     range         = 0.f;   // 0 = 무제한
+    float     innerConeAngle= 0.f;   // Spot inner half-angle (radians)
+    float     outerConeAngle= 0.785f;// Spot outer half-angle (radians)
+    std::string name        = "Light";
+    bool      enabled       = true;  // 런타임 토글
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 //  GLTFTextureData  –  CPU 메모리에 디코딩된 텍스처 한 장
 //  tinygltf + stb_image 가 GLB 내장 이미지를 RGBA8 로 자동 디코딩한다.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,6 +43,7 @@ struct GLTFSceneDesc {
     glm::vec3   cameraPos   = {0.f, 5.f, -15.f};
     float       cameraYaw   = 90.f;
     float       cameraPitch = -10.f;
+    std::vector<SceneLight> lights; // KHR_lights_punctual 에서 추출한 씬 조명
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

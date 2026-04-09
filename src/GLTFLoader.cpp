@@ -170,10 +170,14 @@ static void processPrimitive(const tinygltf::Model&              model,
         uvStride = uvAcc.ByteStride(uvView);
     }
 
-    // ── 재질 베이스 컬러 + 텍스처 인덱스 ────────────────────────────────────
+    // ── 재질 베이스 컬러 + 텍스처 인덱스 + PBR 속성 ─────────────────────────
     glm::vec3 matColor(0.8f);
-    int       texIdx = -1;
-    bool      twoSided = false;
+    int       texIdx      = -1;
+    bool      twoSided    = false;
+    float     matShininess = 32.f;
+    float     matSpecStr   = 0.3f;
+    glm::vec4 matEmissive(0.f); // rgb=발광 색상, a=발광 강도(luminance)
+
     if (prim.material >= 0) {
         const auto& material = model.materials[prim.material];
         const auto& pbr = material.pbrMetallicRoughness;
@@ -193,6 +197,27 @@ static void processPrimitive(const tinygltf::Model&              model,
             if (it != texIndexMap.end())
                 texIdx = it->second;
         }
+
+        // 메탈릭 / 러프니스 → specularStrength / shininess
+        float metallic  = static_cast<float>(pbr.metallicFactor);   // 0..1
+        float roughness = static_cast<float>(pbr.roughnessFactor);  // 0..1
+        matSpecStr   = glm::mix(0.05f, 0.95f, metallic);
+        matShininess = glm::mix(256.f, 4.f, roughness * roughness);
+
+        // 발광 팩터 (KHR_materials_emissive_strength 확장 포함)
+        glm::vec3 emissiveRGB(0.f);
+        if (material.emissiveFactor.size() >= 3)
+            emissiveRGB = glm::vec3(static_cast<float>(material.emissiveFactor[0]),
+                                    static_cast<float>(material.emissiveFactor[1]),
+                                    static_cast<float>(material.emissiveFactor[2]));
+        float emissiveStrength = 1.f;
+        auto esIt = material.extensions.find("KHR_materials_emissive_strength");
+        if (esIt != material.extensions.end() && esIt->second.Has("emissiveStrength"))
+            emissiveStrength = static_cast<float>(
+                esIt->second.Get("emissiveStrength").GetNumberAsDouble());
+        emissiveRGB *= emissiveStrength;
+        float emissiveLum = std::max({emissiveRGB.x, emissiveRGB.y, emissiveRGB.z});
+        matEmissive = glm::vec4(emissiveRGB, emissiveLum);
     }
 
     // ── 버텍스 생성 ──────────────────────────────────────────────────────────
@@ -265,10 +290,11 @@ static void processPrimitive(const tinygltf::Model&              model,
     obj.indexCount            = idxCount;
     obj.push.model            = worldTransform;
     obj.push.baseColor        = glm::vec4(1.f);
-    obj.push.shininess        = 32.f;
-    obj.push.specularStrength = 0.3f;
+    obj.push.shininess        = matShininess;
+    obj.push.specularStrength = matSpecStr;
     obj.push.reflectStrength  = 0.f;
     obj.push.textureIndex     = static_cast<float>(texIdx);
+    obj.push.emissive         = matEmissive;
     obj.textureIndex          = texIdx;
     obj.instanceGroupId       = -1;
     obj.twoSided              = twoSided;
@@ -410,5 +436,78 @@ bool loadGLTFScene(const std::string&           path,
     std::cout << "[GLTFLoader] Loaded '" << sceneDesc.name << "' from " << path
               << "  (" << (objects.size() - objsBefore) << " objects, "
               << verts.size() << " vertices)\n";
+
+    // ── KHR_lights_punctual 조명 추출 ─────────────────────────────────────────
+    // 1단계: 전역 조명 정의 목록 구성
+    std::vector<SceneLight> lightDefs;
+    auto glbLightIt = model.extensions.find("KHR_lights_punctual");
+    if (glbLightIt != model.extensions.end() && glbLightIt->second.Has("lights")) {
+        const auto& lightsArr = glbLightIt->second.Get("lights");
+        int numDef = static_cast<int>(lightsArr.ArrayLen());
+        lightDefs.resize(numDef);
+        for (int li = 0; li < numDef; ++li) {
+            const auto& l = lightsArr.Get(li);
+            SceneLight& sl = lightDefs[li];
+            if (l.Has("name") && l.Get("name").IsString())
+                sl.name = l.Get("name").Get<std::string>();
+            if (l.Has("type") && l.Get("type").IsString()) {
+                std::string t = l.Get("type").Get<std::string>();
+                if      (t == "directional") sl.type = SceneLight::Directional;
+                else if (t == "spot")        sl.type = SceneLight::Spot;
+                else                         sl.type = SceneLight::Point;
+            }
+            if (l.Has("color") && l.Get("color").IsArray()) {
+                const auto& c = l.Get("color");
+                if (static_cast<int>(c.ArrayLen()) >= 3)
+                    sl.color = glm::vec3(static_cast<float>(c.Get(0).GetNumberAsDouble()),
+                                         static_cast<float>(c.Get(1).GetNumberAsDouble()),
+                                         static_cast<float>(c.Get(2).GetNumberAsDouble()));
+            }
+            if (l.Has("intensity"))
+                sl.intensity = static_cast<float>(l.Get("intensity").GetNumberAsDouble());
+            if (l.Has("range"))
+                sl.range = static_cast<float>(l.Get("range").GetNumberAsDouble());
+            if (l.Has("spot")) {
+                const auto& spot = l.Get("spot");
+                if (spot.Has("innerConeAngle"))
+                    sl.innerConeAngle = static_cast<float>(
+                        spot.Get("innerConeAngle").GetNumberAsDouble());
+                if (spot.Has("outerConeAngle"))
+                    sl.outerConeAngle = static_cast<float>(
+                        spot.Get("outerConeAngle").GetNumberAsDouble());
+            }
+        }
+    }
+
+    // 2단계: 노드 순회 → 조명 인스턴스 위치/방향 추출
+    if (!lightDefs.empty()) {
+        std::function<void(int, const glm::mat4&)> traverseLights;
+        traverseLights = [&](int nodeIdx, const glm::mat4& parentTransform) {
+            const tinygltf::Node& node = model.nodes[nodeIdx];
+            glm::mat4 world = parentTransform * nodeLocalTransform(node);
+
+            auto extIt = node.extensions.find("KHR_lights_punctual");
+            if (extIt != node.extensions.end() && extIt->second.Has("light")) {
+                int li = extIt->second.Get("light").GetNumberAsInt();
+                if (li >= 0 && li < static_cast<int>(lightDefs.size())) {
+                    SceneLight sl = lightDefs[li];
+                    sl.position  = glm::vec3(world[3]);
+                    // GLTF 조명 방향: 노드 로컬 -Z 축
+                    sl.direction = glm::normalize(
+                        glm::vec3(world * glm::vec4(0.f, 0.f, -1.f, 0.f)));
+                    sceneDesc.lights.push_back(sl);
+                }
+            }
+            for (int child : node.children)
+                traverseLights(child, world);
+        };
+        for (int rootNode : model.scenes[sceneIdx].nodes)
+            traverseLights(rootNode, glm::mat4(1.f));
+
+        if (!sceneDesc.lights.empty())
+            std::cout << "[GLTFLoader] Extracted " << sceneDesc.lights.size()
+                      << " light(s) from KHR_lights_punctual\n";
+    }
+
     return true;
 }

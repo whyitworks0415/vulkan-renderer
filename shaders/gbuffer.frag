@@ -8,7 +8,7 @@ layout(location = 3) in vec2 fragUV;
 // G-Buffer outputs
 layout(location = 0) out vec4 gAlbedo;   // RGB = albedo,  A = specularStrength
 layout(location = 1) out vec4 gNormal;   // RGB = normal (encoded 0..1),  A = shininess/256
-layout(location = 2) out vec4 gPosition; // RGB = world position,  A = 1.0 (valid pixel flag)
+layout(location = 2) out vec4 gPosition; // RGB = world position,  A = 1.0 + emissiveLum (valid 플래그 겸)
 
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view;
@@ -26,6 +26,7 @@ layout(push_constant) uniform PushConstants {
     float specularStrength;
     float reflectStrength;
     float textureIndex;
+    vec4  emissive;   // rgb=emissive color, a=emissive luminance (G-Buffer 패킹용)
 } pc;
 
 void main() {
@@ -55,5 +56,6 @@ void main() {
     // ── Write G-Buffer ────────────────────────────────────────────────────────
     gAlbedo   = vec4(albedo, pc.specularStrength);
     gNormal   = vec4(N * 0.5 + 0.5, pc.shininess / 256.0);
-    gPosition = vec4(fragPos, 1.0);  // .w=1.0 marks valid pixel
+    // gPosition.w = 1.0 + emissiveLum  →  >= 1.0 이면 유효 픽셀 (배경 픽셀은 0.0)
+    gPosition = vec4(fragPos, 1.0 + pc.emissive.a);
 }
