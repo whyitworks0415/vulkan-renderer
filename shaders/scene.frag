@@ -70,9 +70,9 @@ void main() {
         albedo = fragColor * pc.baseColor.rgb;
     }
 
-    // ── Checkerboard floor ────────────────────────────────────────────────────
+    // ── Checkerboard floor (텍스처 없는 바닥면에만 적용) ─────────────────────
     const float TILE = 1.5;
-    if (N.y > 0.95 && fragPos.y < 0.01) {
+    if (texIdx < 0 && N.y > 0.95 && fragPos.y < 0.01) {
         vec2  uv      = fragPos.xz / TILE;
         vec2  checker = floor(uv);
         float parity  = mod(checker.x + checker.y, 2.0);

@@ -21,3 +21,11 @@ Thumbs.db
 *.log
 build_out.txt
 do_build.bat
+
+# Large binary assets (maps, textures, models)
+Other/
+maps/*.glb
+maps/*.gltf
+maps/Textures/
+maps/InfernoWorld/
+Aim.pdf

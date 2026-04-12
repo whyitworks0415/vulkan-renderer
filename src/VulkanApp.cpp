@@ -1,6 +1,7 @@
 ﻿#include "VulkanApp.h"
 #include "MeshLoader.h"
 #include "GLTFLoader.h"
+#include "OBJLoader.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
@@ -14,6 +15,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -209,7 +212,7 @@ bool VulkanApp::sampleObjectFrontFaceIsClockwise(const DrawObject& obj,
     glm::mat4 view = cam.getViewMatrix();
     glm::mat4 proj = glm::perspective(glm::radians(60.f),
                                       scExtent.width / (float)scExtent.height,
-                                      0.1f, 200.f);
+                                      0.1f, getFarPlane());
     proj[1][1] *= -1.f;
     glm::mat4 vp = proj * view;
 
@@ -294,16 +297,34 @@ void VulkanApp::buildScene() {
         return std::chrono::duration<float, std::milli>(Clock::now() - t0).count();
     };
 
-    // Blender 에서 내보낸 .glb / .gltf 직접 로드
-    // 각 Blender 오브젝트 → 별도 DrawObject (합쳐지지 않음)
+    // 확장자에 따라 적절한 로더로 씬 파일 로드
     auto t_parse = Clock::now();
     GLTFSceneDesc gDesc;
     sceneTextures.clear();
-    if (!loadGLTFScene(currentMapFile, vertices, indices, drawObjects, gDesc, sceneTextures))
-        throw std::runtime_error("Failed to load GLTF scene: " + currentMapFile);
+
+    // 확장자 추출 (소문자)
+    auto extOf = [](const std::string& p) {
+        auto dot = p.rfind('.');
+        if (dot == std::string::npos) return std::string{};
+        std::string e = p.substr(dot);
+        std::transform(e.begin(), e.end(), e.begin(), ::tolower);
+        return e;
+    };
+    std::string ext = extOf(currentMapFile);
+
+    bool loadOk = false;
+    if (ext == ".obj") {
+        loadOk = loadOBJScene(currentMapFile, vertices, indices, drawObjects, gDesc, sceneTextures);
+    } else {
+        // .glb / .gltf (기본)
+        loadOk = loadGLTFScene(currentMapFile, vertices, indices, drawObjects, gDesc, sceneTextures);
+    }
+    if (!loadOk)
+        throw std::runtime_error("Failed to load scene: " + currentMapFile);
     lastLoadTiming.sceneParseMs = elapsed(t_parse);
 
-    sceneLights = gDesc.lights; // KHR_lights_punctual 조명 저장
+    sceneLights     = gDesc.lights; // KHR_lights_punctual 조명 저장
+    sceneLightDirty = true;        // UBO 갱신 필요
 
     camera.position = gDesc.cameraPos;
     camera.yaw      = gDesc.cameraYaw;
@@ -340,6 +361,10 @@ void VulkanApp::buildScene() {
             }
         }
     }
+
+    // 스트레스 배율 기준 복사본 저장 (씬 로드마다 리셋)
+    baseDrawObjects = drawObjects;
+    stressLevel     = 0;
 
     std::cout << "Scene built: "
               << drawObjects.size() << " draw objects, "
@@ -2187,6 +2212,64 @@ void VulkanApp::handleOptKeys() {
     if (bPressed && !prevB)
         darkFloor = !darkFloor;
     prevB = bPressed;
+
+    // F key: Far Plane 확장 (200 <-> 5000) ------------------------------------
+    static bool prevF = false;
+    bool fPressed = (glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS);
+    if (fPressed && !prevF)
+        extendedFarPlane = !extendedFarPlane;
+    prevF = fPressed;
+
+    // L key: Scene Lights 전체 ON/OFF -----------------------------------------
+    static bool prevL = false;
+    bool lPressed = (glfwGetKey(window, GLFW_KEY_L) == GLFW_PRESS);
+    if (lPressed && !prevL) {
+        sceneLightsOn = !sceneLightsOn;
+        sceneLightDirty = true;
+    }
+    prevL = lPressed;
+
+    // N key: Ambient ON/OFF ---------------------------------------------------
+    static bool prevN = false;
+    bool nPressed = (glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS);
+    if (nPressed && !prevN) {
+        ambientOn = !ambientOn;
+        sceneLightDirty = true;
+    }
+    prevN = nPressed;
+
+    // V key: Emissive ON/OFF --------------------------------------------------
+    static bool prevV = false;
+    bool vPressed = (glfwGetKey(window, GLFW_KEY_V) == GLFW_PRESS);
+    if (vPressed && !prevV) {
+        emissiveOn = !emissiveOn;
+        sceneLightDirty = true;
+    }
+    prevV = vPressed;
+
+    // 0 key: 최적화 전체 ON/OFF 토글 -----------------------------------------
+    static bool prev0 = false;
+    bool k0Pressed = (glfwGetKey(window, GLFW_KEY_0) == GLFW_PRESS);
+    if (k0Pressed && !prev0) {
+        bool anyOn = optFlags.frustumCulling || optFlags.lod || optFlags.instancing
+                  || optFlags.backfaceCulling || optFlags.depthSort || optFlags.occlusionCulling
+                  || optFlags.viewDistCulling || optFlags.smallCulling || optFlags.deferredShading;
+        bool val = !anyOn;
+        optFlags.frustumCulling  = val;
+        optFlags.lod             = val;
+        optFlags.instancing      = val;
+        optFlags.backfaceCulling = val;
+        optFlags.depthSort       = val;
+        optFlags.occlusionCulling = val;
+        optFlags.viewDistCulling = val;
+        optFlags.smallCulling    = val;
+        optFlags.deferredShading = val;
+        if (val) {
+            std::fill(occResults.begin(), occResults.end(), 1u);
+            occWarmupFrames = MAX_FRAMES_IN_FLIGHT;
+        }
+    }
+    prev0 = k0Pressed;
 }
 
 void VulkanApp::mainLoop() {
@@ -2247,8 +2330,9 @@ void VulkanApp::mainLoop() {
             prevGhostKey = gPressed;
         }
 
-        // R key: start / stop recording
-        {
+        // R/P 키 + 리플레이/녹화 로직: 자동 벤치마크 중에는 전부 건너뜀
+        if (!autoBenchActive) {
+            // R key: start / stop recording
             static bool prevR = false;
             bool r = (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS);
             if (r && !prevR && !isReplaying) {
@@ -2256,10 +2340,8 @@ void VulkanApp::mainLoop() {
                 else              stopRecording();
             }
             prevR = r;
-        }
 
-        // P key: start / stop replay
-        {
+            // P key: start / stop replay
             static bool prevP = false;
             bool p = (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS);
             if (p && !prevP) {
@@ -2272,7 +2354,6 @@ void VulkanApp::mainLoop() {
         // ── Recording: capture camera state every frame ───────────────────────
         if (isRecording) {
             float elapsed = now - recordStartTime;
-            // Capture at ~60 fps max (skip if < 14ms since last frame)
             if (recordedFrames.empty() || elapsed - recordedFrames.back().time >= 0.014f) {
                 recordedFrames.push_back({elapsed, camera.position,
                                           camera.yaw, camera.pitch});
@@ -2280,6 +2361,7 @@ void VulkanApp::mainLoop() {
         }
 
         // ── Replay: advance playback and update camera ─────────────────────────
+        bool prevIsReplaying = isReplaying;
         if (isReplaying && !replayFrames.empty()) {
             float elapsed = now - replayStartTime;
 
@@ -2307,6 +2389,10 @@ void VulkanApp::mainLoop() {
             }
         }
 
+        // 자동 벤치마크: 리플레이 종료 감지 → 다음 실험/반복으로 진행
+        if (autoBenchActive && prevIsReplaying && !isReplaying)
+            onAutoBenchRunEnd();
+
         // ── Camera input ──────────────────────────────────────────────────────
         if (ghostMode) {
             observerCamera.processKeyboard(window, dt);
@@ -2317,8 +2403,81 @@ void VulkanApp::mainLoop() {
             if (!isReplaying) camera.processKeyboard(window, dt);
         }
 
-        handleOptKeys();
+        // M key: 리플레이 저장 시 자동 벤치마크 / 없으면 5초 단순 벤치마크
+        if (!autoBenchActive) {
+            static bool prevM = false;
+            bool m = (glfwGetKey(window, GLFW_KEY_M) == GLFW_PRESS);
+            if (m && !prevM) {
+                if (!findReplayFiles(replayDir).empty()) {
+                    startAutoBenchmark();
+                } else {
+                    if (!benchmarkActive) startBenchmark();
+                    else                  finishBenchmark();
+                }
+            }
+            prevM = m;
+        } else {
+            // 자동 벤치마크 진행 중: M 키로 중단
+            static bool prevM = false;
+            bool m = (glfwGetKey(window, GLFW_KEY_M) == GLFW_PRESS);
+            if (m && !prevM) {
+                printf("[AutoBench] Aborted by user.\n");
+                if (isReplaying) stopReplay();
+                autoBenchActive = false;
+                optFlags        = autoBenchSavedFlags;
+                ghostMode       = autoBenchSavedGhost;
+            }
+            prevM = m;
+        }
+
+        // T key: 스트레스 배율 순환 (자동 벤치마크 중에는 비활성화)
+        if (!autoBenchActive) {
+            static bool prevT = false;
+            bool tk = (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS);
+            if (tk && !prevT) {
+                stressLevel = (stressLevel + 1) % 5;
+                applyStress();
+            }
+            prevT = tk;
+        }
+
+        // 자동 벤치마크 중에는 숫자 키(1~9) 토글 비활성화
+        if (!autoBenchActive) handleOptKeys();
+
         perfStats.update(dt);
+
+        // 프레임 시간 히스토리 갱신 (고정 링버퍼)
+        frameTimeHistBuf[frameTimeHistIdx] = dt * 1000.f;
+        frameTimeHistIdx = (frameTimeHistIdx + 1) % FRAME_HISTORY_SIZE;
+        if (frameTimeHistCount < FRAME_HISTORY_SIZE) ++frameTimeHistCount;
+
+        // 수동 벤치마크 샘플 수집 (5초 단순 측정)
+        if (benchmarkActive) {
+            benchmarkElapsed += dt;
+            benchmarkSamples.push_back({
+                perfStats.fps,
+                perfStats.frameTimeMs,
+                perfStats.cpuPercent,
+                perfStats.gpuPercent,
+                renderedCount,
+                culledCount
+            });
+            if (benchmarkElapsed >= benchmarkDuration)
+                finishBenchmark();
+        }
+
+        // 자동 벤치마크 샘플 수집 (리플레이 재생 중)
+        if (autoBenchActive && isReplaying &&
+            autoBenchExpIdx < (int)autoBenchExps.size()) {
+            autoBenchExps[autoBenchExpIdx].current.push_back({
+                perfStats.fps,
+                perfStats.frameTimeMs,
+                perfStats.cpuPercent,
+                perfStats.gpuPercent,
+                renderedCount,
+                culledCount
+            });
+        }
 
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -2344,7 +2503,7 @@ void VulkanApp::updateUniformBuffer(uint32_t frameIndex) {
         ubo.view      = cam.getViewMatrix();
         ubo.proj      = glm::perspective(glm::radians(60.0f),
                                          scExtent.width / (float)scExtent.height,
-                                         0.1f, 200.0f);
+                                         0.1f, getFarPlane());
         ubo.proj[1][1] *= -1; // Vulkan Y-flip
         ubo.cameraPos  = glm::vec4(cam.position, darkFloor ? 1.0f : 0.0f);
 
@@ -2358,28 +2517,33 @@ void VulkanApp::updateUniformBuffer(uint32_t frameIndex) {
     writeCameraUbo(uniformBuffersMapped[frameIndex], renderCam);
     writeCameraUbo(cullUniformBuffersMapped[frameIndex], cullCam);
 
-    // ── SceneLightUBO 갱신 ────────────────────────────────────────────────────
-    SceneLightUBO lightUbo{};
-    lightUbo.useSceneLights = (!sceneLights.empty() && sceneLightsOn) ? 1 : 0;
-    lightUbo.ambientOn      = ambientOn  ? 1 : 0;
-    lightUbo.emissiveOn     = emissiveOn ? 1 : 0;
+    // ── SceneLightUBO 갱신 (dirty flag: 변경 시에만 memcpy) ──────────────────
+    if (sceneLightDirty) {
+        SceneLightUBO lightUbo{};
+        lightUbo.useSceneLights = (!sceneLights.empty() && sceneLightsOn) ? 1 : 0;
+        lightUbo.ambientOn      = ambientOn  ? 1 : 0;
+        lightUbo.emissiveOn     = emissiveOn ? 1 : 0;
 
-    int gpuIdx = 0;
-    for (const SceneLight& sl : sceneLights) {
-        if (gpuIdx >= MAX_SCENE_LIGHTS) break;
-        GpuSceneLight& gl = lightUbo.lights[gpuIdx++];
-        if (sl.type == SceneLight::Directional) {
-            gl.posRange  = glm::vec4(sl.direction, 0.f);   // direction in xyz
-            gl.dirType   = glm::vec4(sl.direction, 1.f);   // type=1
-        } else {
-            gl.posRange  = glm::vec4(sl.position, sl.range);
-            gl.dirType   = glm::vec4(sl.direction, (sl.type == SceneLight::Spot) ? 2.f : 0.f);
+        int gpuIdx = 0;
+        for (const SceneLight& sl : sceneLights) {
+            if (gpuIdx >= MAX_SCENE_LIGHTS) break;
+            GpuSceneLight& gl = lightUbo.lights[gpuIdx++];
+            if (sl.type == SceneLight::Directional) {
+                gl.posRange  = glm::vec4(sl.direction, 0.f);
+                gl.dirType   = glm::vec4(sl.direction, 1.f);
+            } else {
+                gl.posRange  = glm::vec4(sl.position, sl.range);
+                gl.dirType   = glm::vec4(sl.direction, (sl.type == SceneLight::Spot) ? 2.f : 0.f);
+            }
+            gl.colorEnab = glm::vec4(sl.color * sl.intensity,
+                                     (sceneLightsOn && sl.enabled) ? 1.f : 0.f);
         }
-        gl.colorEnab = glm::vec4(sl.color * sl.intensity,
-                                 (sceneLightsOn && sl.enabled) ? 1.f : 0.f);
+        lightUbo.numLights = gpuIdx;
+        // 더블 버퍼 모두 업데이트
+        for (int fi = 0; fi < MAX_FRAMES_IN_FLIGHT; ++fi)
+            memcpy(sceneLightUBOMapped[fi], &lightUbo, sizeof(lightUbo));
+        sceneLightDirty = false;
     }
-    lightUbo.numLights = gpuIdx;
-    memcpy(sceneLightUBOMapped[frameIndex], &lightUbo, sizeof(lightUbo));
 }
 
 void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
@@ -2438,51 +2602,44 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
     }
     const std::vector<int>& order = frameOrder;
 
-    auto isInsideFrustum = [&](const DrawObject& obj) {
-        return !optFlags.frustumCulling
-            || sphereInFrustum(frustum, obj.boundCenter, obj.boundRadius);
+    // 통합 컬링 체크: frustum + viewDist + smallObj 를 한 번에 수행
+    // 3개 lambda 캡처·호출 오버헤드 제거
+    constexpr float kTanHalfFov = 0.57735f; // tan(30°)
+    const bool doFrustum  = optFlags.frustumCulling;
+    const bool doViewDist = optFlags.viewDistCulling;
+    const bool doSmall    = optFlags.smallCulling;
+    const glm::vec3 cullPos = cullCam.position;
+    const float halfH = scExtent.height * 0.5f;
+
+    auto isCulled = [&](const DrawObject& obj) -> bool {
+        if (doFrustum && !sphereInFrustum(frustum, obj.boundCenter, obj.boundRadius))
+            return true;
+        if (doViewDist) {
+            float dist = glm::length(cullPos - obj.boundCenter) - obj.boundRadius;
+            if (dist > viewDistMax) return true;
+        }
+        if (doSmall) {
+            float dist = glm::length(cullPos - obj.boundCenter);
+            if (dist >= 1e-4f && obj.boundRadius / dist * halfH / kTanHalfFov < smallCullPx)
+                return true;
+        }
+        return false;
     };
 
-    auto isViewDistCulled = [&](const DrawObject& obj) -> bool {
-        if (!optFlags.viewDistCulling) return false;
-        float dist = glm::length(cullCam.position - obj.boundCenter) - obj.boundRadius;
-        return dist > viewDistMax;
-    };
-
-    auto isSmallObjCulled = [&](const DrawObject& obj) -> bool {
-        if (!optFlags.smallCulling) return false;
-        float dist = glm::length(cullCam.position - obj.boundCenter);
-        if (dist < 1e-4f) return false;
-        // 화면 반지름(픽셀) = boundRadius / dist * (screenH/2) / tan(fovY/2)
-        constexpr float kTanHalfFov = 0.57735f; // tan(30°) = tan(60°/2)
-        float projR = obj.boundRadius / dist
-                    * (scExtent.height * 0.5f) / kTanHalfFov;
-        return projR < smallCullPx;
-    };
-
-    // Ghost mode: 컬링된 오브젝트를 색상으로 표시하기 위해 컬링 상태를 통합 반환
+    // Ghost mode: 컬링 이유별 색상 반환 (컬링 안 됐으면 alpha=0)
     auto ghostCullColor = [&](const DrawObject& obj) -> glm::vec4 {
-        // Returns {0,0,0,0} if not culled, else the tint color for the overlay
-        if (!isInsideFrustum(obj))    return {1.0f, 0.15f, 0.15f, 0.13f}; // 빨강: frustum 컬링
-        if (isViewDistCulled(obj))    return {1.0f, 0.55f, 0.05f, 0.13f}; // 주황: 원거리 컬링
-        if (isSmallObjCulled(obj))    return {1.0f, 0.95f, 0.05f, 0.13f}; // 노랑: 소형 컬링
-        return {0.f, 0.f, 0.f, 0.f}; // 컬링 없음
-    };
-
-    auto isOccludedByQuery = [&](const DrawObject& obj, int idx) {
-        return occlusionEnabled && !obj.skipOcclusion
-            && idx < (int)occResults.size() && occResults[idx] == 0;
-    };
-
-    auto opaquePipelineFor = [&](const DrawObject& obj) {
-        if (!optFlags.backfaceCulling || obj.twoSided)
-            return graphicsPipelineNoCull;
-        return obj.reverseFrontFace ? graphicsPipelineFlippedCull
-                                    : graphicsPipeline;
-    };
-
-    auto canUseInstancingFor = [&](const DrawObject& obj) {
-        return obj.instanceGroupId >= 0 && !obj.twoSided && !obj.reverseFrontFace;
+        if (doFrustum && !sphereInFrustum(frustum, obj.boundCenter, obj.boundRadius))
+            return {1.0f, 0.15f, 0.15f, 0.13f};
+        if (doViewDist) {
+            float dist = glm::length(cullPos - obj.boundCenter) - obj.boundRadius;
+            if (dist > viewDistMax) return {1.0f, 0.55f, 0.05f, 0.13f};
+        }
+        if (doSmall) {
+            float dist = glm::length(cullPos - obj.boundCenter);
+            if (dist >= 1e-4f && obj.boundRadius / dist * halfH / kTanHalfFov < smallCullPx)
+                return {1.0f, 0.95f, 0.05f, 0.13f};
+        }
+        return {0.f, 0.f, 0.f, 0.f};
     };
 
     auto beginScenePass = [&](VkDescriptorSet camSet, VkPipeline pipe) {
@@ -2563,9 +2720,8 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
         for (int idx : order) {
             auto& obj = drawObjects[idx];
             if (obj.push.baseColor.w < 0.999f) continue;
-            if (!isInsideFrustum(obj)) {
+            if (doFrustum && !sphereInFrustum(frustum, obj.boundCenter, obj.boundRadius))
                 continue;
-            }
 
             uint32_t idxStart = obj.indexStart;
             uint32_t idxCount = obj.indexCount;
@@ -2574,7 +2730,9 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
 
             PushConstants pc = obj.push;
             pc.model = model;
-            VkPipeline pipe = opaquePipelineFor(obj);
+            VkPipeline pipe = (!optFlags.backfaceCulling || obj.twoSided)
+                ? graphicsPipelineNoCull
+                : (obj.reverseFrontFace ? graphicsPipelineFlippedCull : graphicsPipeline);
             if (pipe != boundGhostPipe) {
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
                 boundGhostPipe = pipe;
@@ -2623,7 +2781,7 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
         for (int idx : order) {
             const auto& obj = drawObjects[idx];
             if (obj.push.baseColor.w < 0.999f) continue; // skip transparent
-            if (!isInsideFrustum(obj) || isViewDistCulled(obj) || isSmallObjCulled(obj)) continue;
+            if (isCulled(obj)) continue;
 
             uint32_t  gbIdxStart = obj.indexStart;
             uint32_t  gbIdxCount = obj.indexCount;
@@ -2716,13 +2874,14 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
             uint32_t count = 0;
             for (int idx : grp.members) {
                 auto& obj = drawObjects[idx];
-                if (!canUseInstancingFor(obj)) continue;
+                if (obj.instanceGroupId < 0 || obj.twoSided || obj.reverseFrontFace) continue;
                 if (obj.push.baseColor.w < 0.999f) continue;
-                if (!isInsideFrustum(obj) || isViewDistCulled(obj) || isSmallObjCulled(obj)) {
+                if (isCulled(obj)) {
                     culledCount++;
                     continue;
                 }
-                if (isOccludedByQuery(obj, idx)) {
+                if (occlusionEnabled && !obj.skipOcclusion
+                    && idx < (int)occResults.size() && occResults[idx] == 0) {
                     culledCount++;
                     continue;
                 }
@@ -2772,15 +2931,17 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
 
     for (int idx : order) {
         auto& obj = drawObjects[idx];
-        if (optFlags.instancing && canUseInstancingFor(obj)) continue;
+        if (optFlags.instancing && obj.instanceGroupId >= 0
+            && !obj.twoSided && !obj.reverseFrontFace) continue;
         if (obj.push.baseColor.w < 0.999f) continue;
 
-        if (!isInsideFrustum(obj) || isViewDistCulled(obj) || isSmallObjCulled(obj)) {
+        if (isCulled(obj)) {
             culledCount++;
             continue;
         }
 
-        if (isOccludedByQuery(obj, idx)) {
+        if (occlusionEnabled && !obj.skipOcclusion
+            && idx < (int)occResults.size() && occResults[idx] == 0) {
             culledCount++;
             continue;
         }
@@ -2805,7 +2966,9 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
                 : glm::vec4(1.0f, 0.20f, 0.05f, 1.0f);  // 빨강 = LOD2
         }
 
-        VkPipeline pipe = opaquePipelineFor(obj);
+        VkPipeline pipe = (!optFlags.backfaceCulling || obj.twoSided)
+            ? graphicsPipelineNoCull
+            : (obj.reverseFrontFace ? graphicsPipelineFlippedCull : graphicsPipeline);
         if (pipe != boundOpaquePipe) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
             boundOpaquePipe = pipe;
@@ -2827,7 +2990,8 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
         for (int idx : order) {
             const auto& obj = drawObjects[idx];
             if (obj.push.baseColor.w < 0.999f) continue;
-            if (optFlags.instancing && canUseInstancingFor(obj)) continue;
+            if (optFlags.instancing && obj.instanceGroupId >= 0
+                && !obj.twoSided && !obj.reverseFrontFace) continue;
             glm::vec4 col = ghostCullColor(obj);
             if (col.a > 0.f) culledOverlay.push_back(idx);
         }
@@ -2877,7 +3041,7 @@ void VulkanApp::recordCommandBuffer(VkCommandBuffer cmd, uint32_t imageIndex) {
 
             for (int idx : transOrder) {
                 auto& obj = drawObjects[idx];
-                if (!isInsideFrustum(obj)) {
+                if (doFrustum && !sphereInFrustum(frustum, obj.boundCenter, obj.boundRadius)) {
                     culledCount++;
                     continue;
                 }
@@ -3322,6 +3486,283 @@ void VulkanApp::cleanupImGui() {
 // ?????????????????????????????????????????????????????????????????????????????
 //  Stats overlay
 // ?????????????????????????????????????????????????????????????????????????????
+// =============================================================================
+//  Benchmark logger
+// =============================================================================
+void VulkanApp::startBenchmark() {
+    benchmarkSamples.clear();
+    benchmarkElapsed = 0.f;
+    benchmarkActive  = true;
+    printf("[Benchmark] Started (%.0f s)\n", benchmarkDuration);
+}
+
+void VulkanApp::finishBenchmark() {
+    benchmarkActive = false;
+    if (benchmarkSamples.empty()) return;
+
+    int   n      = (int)benchmarkSamples.size();
+    float sumFps = 0, sumFt = 0, sumCpu = 0, sumGpu = 0;
+    float minFt  = 1e9f, maxFt = 0.f;
+    int   sumDc  = 0,    sumCulled = 0;
+    for (auto& s : benchmarkSamples) {
+        sumFps    += s.fps;
+        sumFt     += s.frameTimeMs;
+        sumCpu    += s.cpuPercent;
+        sumGpu    += s.gpuPercent;
+        sumDc     += s.drawCalls;
+        sumCulled += s.culled;
+        minFt = std::min(minFt, s.frameTimeMs);
+        maxFt = std::max(maxFt, s.frameTimeMs);
+    }
+
+    std::filesystem::create_directories("results");
+
+    auto       tp = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(tp);
+    char ts[20]   = {};
+    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&t));
+
+    // 최적화 플래그 문자열 (9비트)
+    char flags[12] = {};
+    std::snprintf(flags, sizeof(flags), "%d%d%d%d%d%d%d%d%d",
+        (int)optFlags.frustumCulling,  (int)optFlags.lod,
+        (int)optFlags.instancing,      (int)optFlags.backfaceCulling,
+        (int)optFlags.depthSort,       (int)optFlags.occlusionCulling,
+        (int)optFlags.viewDistCulling, (int)optFlags.smallCulling,
+        (int)optFlags.deferredShading);
+
+    std::string path = std::string("results/bench_") + flags
+                     + "_stress" + std::to_string(stressLevel)
+                     + "_" + ts + ".csv";
+
+    std::ofstream csv(path);
+    csv << "frame,fps,frametime_ms,cpu_pct,gpu_pct,draw_calls,culled\n";
+    for (int i = 0; i < n; ++i) {
+        auto& s = benchmarkSamples[i];
+        csv << i << "," << s.fps << "," << s.frameTimeMs << ","
+            << s.cpuPercent << "," << s.gpuPercent << ","
+            << s.drawCalls  << "," << s.culled << "\n";
+    }
+    csv << "\n# summary: avg_fps,avg_ft_ms,min_ft_ms,max_ft_ms,avg_cpu_pct,avg_gpu_pct,avg_dc,avg_culled\n";
+    csv << "summary,"
+        << (sumFps / n) << "," << (sumFt / n) << ","
+        << minFt        << "," << maxFt        << ","
+        << (sumCpu / n) << "," << (sumGpu / n) << ","
+        << (sumDc  / n) << "," << (sumCulled / n) << "\n";
+    csv << "# flags(FC,LOD,Inst,BFC,DS,OC,VDC,SC,Def): " << flags << "\n";
+    csv << "# stress_level: " << stressLevel
+        << "  objects: " << (int)drawObjects.size() << "\n";
+
+    printf("[Benchmark] Saved: %s  (avg FPS %.1f  avg ft %.2f ms)\n",
+           path.c_str(), sumFps / n, sumFt / n);
+}
+
+// =============================================================================
+//  Stress scene multiplier
+// =============================================================================
+void VulkanApp::applyStress() {
+    if (occlusionQueryPool != VK_NULL_HANDLE) {
+        vkDeviceWaitIdle(device);
+        vkDestroyQueryPool(device, occlusionQueryPool, nullptr);
+        occlusionQueryPool = VK_NULL_HANDLE;
+        occQueryCount      = 0;
+    }
+
+    if (stressLevel == 0) {
+        drawObjects = baseDrawObjects;
+    } else {
+        const int   extra   = (1 << stressLevel) - 1; // 2x=1, 4x=3, 8x=7, 16x=15
+        const float SPACING = 30.0f;
+        drawObjects = baseDrawObjects;
+        int row = 1, col = 0;
+        for (int c = 0; c < extra; ++c) {
+            glm::vec3 offset((float)col * SPACING, 0.f, (float)row * SPACING);
+            for (const auto& obj : baseDrawObjects) {
+                DrawObject copy      = obj;
+                copy.push.model      = glm::translate(glm::mat4(1.f), offset) * obj.push.model;
+                copy.boundCenter     = obj.boundCenter + offset;
+                copy.skipOcclusion   = true;
+                copy.instanceGroupId = -1;
+                drawObjects.push_back(copy);
+            }
+            if (++col >= 4) { col = 0; ++row; }
+        }
+    }
+
+    occResults.assign(drawObjects.size(), 1u);
+    occQueryBuf.resize(drawObjects.size() * 2, 0);
+    if (!drawObjects.empty()) createOcclusionQueryPool();
+    occWarmupFrames = MAX_FRAMES_IN_FLIGHT;
+
+    printf("[Stress] Level %d -> %dx  (%d objects)\n",
+           stressLevel, 1 << stressLevel, (int)drawObjects.size());
+}
+
+// =============================================================================
+//  Auto-benchmark (replay-based, M key)
+// =============================================================================
+void VulkanApp::startAutoBenchmark() {
+    // 리플레이 파일 필요
+    auto files = findReplayFiles(replayDir);
+    if (files.empty()) {
+        printf("[AutoBench] No replay found. Record a replay with [R] first.\n");
+        return;
+    }
+    autoBenchReplayPath = files.back(); // 가장 최근 리플레이
+
+    // 현재 상태 저장 & 불필요한 기능 비활성화 (순수 렌더 성능만 측정)
+    autoBenchSavedFlags = optFlags;
+    autoBenchSavedGhost = ghostMode;
+    ghostMode = false;   // ghost 모드 OFF (기즈모·오버레이 컬링 시각화 제거)
+
+    // ── 10 실험 정의 ─────────────────────────────────────────────────────────
+    // 모든 실험은 baseline(all OFF) 기준으로 하나씩 최적화 기법을 추가
+    OptFlags off{};
+    off.frustumCulling = off.lod = off.instancing = off.backfaceCulling =
+    off.depthSort = off.occlusionCulling = off.viewDistCulling =
+    off.smallCulling = off.deferredShading = false;
+
+    autoBenchExps.clear();
+    auto addExp = [&](const std::string& name, OptFlags f) {
+        AutoBenchExp e; e.name = name; e.flags = f; autoBenchExps.push_back(std::move(e));
+    };
+
+    OptFlags f;
+    addExp("0.Baseline (all OFF)", off);
+
+    f = off; f.frustumCulling   = true;  addExp("1.Frustum Culling",   f);
+    f = off; f.lod               = true;  addExp("2.LOD",               f);
+    f = off; f.instancing        = true;  addExp("3.GPU Instancing",    f);
+    f = off; f.backfaceCulling   = true;  addExp("4.Backface Culling",  f);
+    f = off; f.depthSort         = true;  addExp("5.Depth Sort",        f);
+    f = off; f.occlusionCulling  = true;  addExp("6.Occlusion Culling", f);
+    f = off; f.viewDistCulling   = true;  addExp("7.View Dist Cull",    f);
+    f = off; f.smallCulling      = true;  addExp("8.Small Obj Cull",    f);
+    f = off; f.deferredShading   = true;  addExp("9.Deferred Shading",  f);
+
+    autoBenchExpIdx = 0;
+    autoBenchRunIdx = 0;
+    autoBenchActive = true;
+    printf("[AutoBench] Starting: %d experiments x %d runs each  replay=%s\n",
+           AUTO_BENCH_TOTAL, AUTO_BENCH_RUNS, autoBenchReplayPath.c_str());
+    startAutoBenchRun();
+}
+
+void VulkanApp::startAutoBenchRun() {
+    auto& exp = autoBenchExps[autoBenchExpIdx];
+    optFlags  = exp.flags;
+    exp.current.clear();
+    startReplay(autoBenchReplayPath);
+    printf("[AutoBench] Exp %d/%d '%s'  run %d/%d\n",
+           autoBenchExpIdx + 1, AUTO_BENCH_TOTAL,
+           exp.name.c_str(),
+           autoBenchRunIdx + 1, AUTO_BENCH_RUNS);
+}
+
+void VulkanApp::onAutoBenchRunEnd() {
+    auto& exp = autoBenchExps[autoBenchExpIdx];
+    if (!exp.current.empty()) {
+        int   n      = (int)exp.current.size();
+        float sumFps = 0, sumFt = 0, sumCpu = 0, sumGpu = 0;
+        float minFt  = 1e9f, maxFt = 0.f;
+        int   sumDc  = 0, sumCulled = 0;
+        for (auto& s : exp.current) {
+            sumFps    += s.fps;
+            sumFt     += s.frameTimeMs;
+            sumCpu    += s.cpuPercent;
+            sumGpu    += s.gpuPercent;
+            sumDc     += s.drawCalls;
+            sumCulled += s.culled;
+            minFt = std::min(minFt, s.frameTimeMs);
+            maxFt = std::max(maxFt, s.frameTimeMs);
+        }
+        AutoBenchRunResult r{};
+        r.avgFps    = sumFps / n;
+        r.avgFtMs   = sumFt  / n;
+        r.minFtMs   = minFt;
+        r.maxFtMs   = maxFt;
+        r.avgCpu    = sumCpu / n;
+        r.avgGpu    = sumGpu / n;
+        r.avgDc     = sumDc  / n;
+        r.avgCulled = sumCulled / n;
+        exp.runs.push_back(r);
+        exp.current.clear();
+    }
+
+    ++autoBenchRunIdx;
+    if (autoBenchRunIdx < AUTO_BENCH_RUNS) {
+        startAutoBenchRun();
+        return;
+    }
+    // 다음 실험
+    autoBenchRunIdx = 0;
+    ++autoBenchExpIdx;
+    if (autoBenchExpIdx < AUTO_BENCH_TOTAL) {
+        startAutoBenchRun();
+        return;
+    }
+    finishAutoBenchmark();
+}
+
+void VulkanApp::finishAutoBenchmark() {
+    autoBenchActive = false;
+    optFlags        = autoBenchSavedFlags;
+    ghostMode       = autoBenchSavedGhost;
+
+    std::filesystem::create_directories("results");
+
+    auto       tp = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(tp);
+    char ts[20]   = {};
+    std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", std::localtime(&t));
+
+    std::string path = std::string("results/autobench_") + ts + ".csv";
+    std::ofstream csv(path);
+
+    // 헤더
+    csv << "experiment,run,avg_fps,avg_ft_ms,min_ft_ms,max_ft_ms,"
+           "avg_cpu_pct,avg_gpu_pct,avg_dc,avg_culled\n";
+
+    for (auto& exp : autoBenchExps) {
+        for (int r = 0; r < (int)exp.runs.size(); ++r) {
+            auto& res = exp.runs[r];
+            csv << exp.name << "," << (r + 1) << ","
+                << res.avgFps    << "," << res.avgFtMs   << ","
+                << res.minFtMs   << "," << res.maxFtMs   << ","
+                << res.avgCpu    << "," << res.avgGpu    << ","
+                << res.avgDc     << "," << res.avgCulled << "\n";
+        }
+    }
+
+    // 실험별 평균 요약 + baseline 대비 개선률
+    csv << "\n# --- 실험별 평균 요약 (5회 평균) ---\n";
+    csv << "experiment,avg_fps,avg_ft_ms,fps_vs_baseline_pct\n";
+
+    float baseAvgFps = 0.f, baseAvgFt = 0.f;
+    if (!autoBenchExps.empty() && !autoBenchExps[0].runs.empty()) {
+        for (auto& r : autoBenchExps[0].runs) { baseAvgFps += r.avgFps; baseAvgFt += r.avgFtMs; }
+        baseAvgFps /= (float)autoBenchExps[0].runs.size();
+        baseAvgFt  /= (float)autoBenchExps[0].runs.size();
+    }
+
+    for (auto& exp : autoBenchExps) {
+        if (exp.runs.empty()) continue;
+        float fps = 0.f, ft = 0.f;
+        for (auto& r : exp.runs) { fps += r.avgFps; ft += r.avgFtMs; }
+        fps /= (float)exp.runs.size();
+        ft  /= (float)exp.runs.size();
+        float improvement = (baseAvgFps > 0.f) ? (fps - baseAvgFps) / baseAvgFps * 100.f : 0.f;
+        csv << exp.name << "," << fps << "," << ft << "," << improvement << "\n";
+    }
+
+    csv << "# replay: " << autoBenchReplayPath << "\n";
+    csv << "# stress_level: " << stressLevel
+        << "  objects: " << (int)drawObjects.size() << "\n";
+
+    printf("[AutoBench] Done! Saved: %s\n", path.c_str());
+    printf("[AutoBench] Baseline avg FPS: %.1f  ft: %.2f ms\n", baseAvgFps, baseAvgFt);
+}
+
 void VulkanApp::drawStatsOverlay() {
     const float PAD = 10.0f;
     ImGuiIO& io = ImGui::GetIO();
@@ -3342,6 +3783,28 @@ void VulkanApp::drawStatsOverlay() {
     ImGui::SetNextWindowSize({220, 0}, ImGuiCond_Always);
 
     if (ImGui::Begin("##stats", nullptr, flags)) {
+        // ── 자동 벤치마크 중: 최소 오버레이 (진행 상황만 표시) ────────────────
+        if (autoBenchActive) {
+            ImGui::TextColored({1.0f, 0.9f, 0.2f, 1.0f}, "AUTO-BENCHMARK");
+            ImGui::Separator();
+            int totalRuns = AUTO_BENCH_TOTAL * AUTO_BENCH_RUNS;
+            int doneRuns  = autoBenchExpIdx * AUTO_BENCH_RUNS + autoBenchRunIdx;
+            char pbuf[48];
+            std::snprintf(pbuf, sizeof(pbuf), "%d / %d", doneRuns, totalRuns);
+            ImGui::ProgressBar((float)doneRuns / totalRuns, ImVec2(-1, 0), pbuf);
+            if (autoBenchExpIdx < (int)autoBenchExps.size()) {
+                ImGui::Text("Exp %d: %s", autoBenchExpIdx + 1,
+                            autoBenchExps[autoBenchExpIdx].name.c_str());
+                ImGui::Text("Run %d/%d", autoBenchRunIdx + 1, AUTO_BENCH_RUNS);
+            }
+            ImGui::TextColored({0.6f,0.6f,0.6f,1.f}, "[M] Abort");
+            ImGui::TextColored(
+                (perfStats.fps >= 60.f) ? ImVec4{0.4f,1.0f,0.4f,1.0f}
+                                        : ImVec4{1.0f,0.3f,0.3f,1.0f},
+                "FPS %.1f", perfStats.fps);
+            ImGui::End();
+            return; // 나머지 UI 전부 스킵 -> 오버헤드 최소화
+        }
         // ?? Performance ???????????????????????????????????????????????????????
         ImGui::TextColored({0.85f, 0.85f, 1.0f, 1.0f}, "Performance");
         ImGui::Separator();
@@ -3351,6 +3814,27 @@ void VulkanApp::drawStatsOverlay() {
                                                   : ImVec4{1.0f,0.3f,0.3f,1.0f};
         ImGui::TextColored(fpsColor, "FPS       %6.1f", perfStats.fps);
         ImGui::Text(        "Frame     %5.2f ms",       perfStats.frameTimeMs);
+
+        // 프레임 시간 히스토리 그래프 (고정 링버퍼 → 선형 배열로 언롤)
+        if (frameTimeHistCount > 0) {
+            float hist[FRAME_HISTORY_SIZE];
+            int n = frameTimeHistCount;
+            int oldest = (frameTimeHistIdx - n + FRAME_HISTORY_SIZE) % FRAME_HISTORY_SIZE;
+            for (int i = 0; i < n; ++i)
+                hist[i] = frameTimeHistBuf[(oldest + i) % FRAME_HISTORY_SIZE];
+            float ftMin = hist[0], ftMax = hist[0], ftSum = 0.f;
+            for (int i = 0; i < n; ++i) {
+                ftMin = std::min(ftMin, hist[i]);
+                ftMax = std::max(ftMax, hist[i]);
+                ftSum += hist[i];
+            }
+            float ftAvg = ftSum / (float)n;
+            char overlay[32];
+            std::snprintf(overlay, sizeof(overlay), "avg %.1f ms", ftAvg);
+            ImGui::PlotLines("##ft", hist, n, 0,
+                             overlay, 0.f, std::max(ftMax * 1.2f, 33.f), {-1, 40});
+            ImGui::Text("min %5.2f  max %5.2f ms", ftMin, ftMax);
+        }
 
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
 
@@ -3410,23 +3894,89 @@ void VulkanApp::drawStatsOverlay() {
         row("7", "View Dist Cull",    optFlags.viewDistCulling);
         row("8", "Small Obj Cull",    optFlags.smallCulling);
         row("9", "Deferred Shading",  optFlags.deferredShading);
+        row("0", "All Optimizations", optFlags.frustumCulling && optFlags.lod &&
+            optFlags.instancing && optFlags.backfaceCulling && optFlags.depthSort &&
+            optFlags.occlusionCulling && optFlags.viewDistCulling &&
+            optFlags.smallCulling && optFlags.deferredShading);
         row("B", "Dark Floor",        darkFloor);
+        row("F", "Far Plane 5000",    extendedFarPlane);
 
         // ── Lighting controls ─────────────────────────────────────────────────
         ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
         ImGui::TextColored({0.85f, 0.85f, 1.0f, 1.0f}, "Lighting");
         ImGui::Separator();
-        ImGui::Checkbox("Scene Lights", &sceneLightsOn);
-        ImGui::Checkbox("Ambient",      &ambientOn);
-        ImGui::Checkbox("Emissive",     &emissiveOn);
+        row("L", "Scene Lights",      sceneLightsOn);
+        row("N", "Ambient",           ambientOn);
+        row("V", "Emissive",          emissiveOn);
         if (!sceneLights.empty()) {
             ImGui::Spacing();
             ImGui::TextDisabled("GLTF Lights (%d)", (int)sceneLights.size());
             for (int li = 0; li < (int)sceneLights.size() && li < MAX_SCENE_LIGHTS; ++li) {
-                // ImGui ID 충돌 방지: name + index
-                std::string label = sceneLights[li].name + "##L" + std::to_string(li);
-                ImGui::Checkbox(label.c_str(), &sceneLights[li].enabled);
+                ImGui::TextColored(
+                    sceneLights[li].enabled ? ImVec4{0.4f,1.f,0.4f,1.f} : ImVec4{0.5f,0.5f,0.5f,1.f},
+                    "  %s %s", sceneLights[li].enabled ? "ON " : "OFF",
+                    sceneLights[li].name.c_str());
             }
+        }
+
+        // ── Benchmark ──────────────────────────────────────────────────────────
+        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+        ImGui::TextColored({0.85f, 0.85f, 1.0f, 1.0f}, "Benchmark");
+        ImGui::Separator();
+
+        if (autoBenchActive) {
+            // 자동 벤치마크 진행 상황
+            int totalRuns  = AUTO_BENCH_TOTAL * AUTO_BENCH_RUNS;
+            int doneRuns   = autoBenchExpIdx * AUTO_BENCH_RUNS + autoBenchRunIdx;
+            float progAll  = (totalRuns > 0) ? (float)doneRuns / totalRuns : 0.f;
+
+            char pbuf[48];
+            std::snprintf(pbuf, sizeof(pbuf), "%d / %d runs", doneRuns, totalRuns);
+            ImGui::ProgressBar(progAll, ImVec2(-1, 0), pbuf);
+
+            if (autoBenchExpIdx < (int)autoBenchExps.size()) {
+                auto& exp = autoBenchExps[autoBenchExpIdx];
+                ImGui::TextColored({1.0f,0.9f,0.2f,1.0f},
+                    "Exp %d/%d  Run %d/%d",
+                    autoBenchExpIdx + 1, AUTO_BENCH_TOTAL,
+                    autoBenchRunIdx + 1, AUTO_BENCH_RUNS);
+                ImGui::TextColored({0.7f,0.9f,1.0f,1.0f}, "%s", exp.name.c_str());
+                ImGui::Text("Samples: %d", (int)exp.current.size());
+            }
+            ImGui::TextDisabled("[M] Abort");
+        } else if (benchmarkActive) {
+            float prog = glm::clamp(benchmarkElapsed / benchmarkDuration, 0.f, 1.f);
+            char  pbuf[32];
+            std::snprintf(pbuf, sizeof(pbuf), "%.1f / %.0f s", benchmarkElapsed, benchmarkDuration);
+            ImGui::ProgressBar(prog, ImVec2(-1, 0), pbuf);
+            ImGui::TextColored({1.0f,0.9f,0.2f,1.0f}, "%d samples", (int)benchmarkSamples.size());
+            ImGui::TextDisabled("[M] Stop & save CSV");
+        } else {
+            bool hasReplay = !findReplayFiles(replayDir).empty();
+            if (hasReplay) {
+                ImGui::TextColored({0.4f,1.0f,0.7f,1.0f},
+                    "[M] Auto-bench");
+                ImGui::TextDisabled("%d exps x %d runs",
+                    AUTO_BENCH_TOTAL, AUTO_BENCH_RUNS);
+                ImGui::TextDisabled("Saves autobench_*.csv");
+            } else {
+                ImGui::TextDisabled("[M] Start %.0fs benchmark", benchmarkDuration);
+                ImGui::TextDisabled("(Record replay first for");
+                ImGui::TextDisabled(" full auto-benchmark)");
+            }
+        }
+
+        // ── Stress multiplier ──────────────────────────────────────────────────
+        ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+        ImGui::TextColored({0.85f, 0.85f, 1.0f, 1.0f}, "Stress Test");
+        ImGui::Separator();
+        {
+            int mult = 1 << stressLevel;
+            ImVec4 stressCol = (stressLevel == 0) ? ImVec4{0.6f,0.6f,0.6f,1.f}
+                             : (stressLevel <= 2)  ? ImVec4{1.0f,0.9f,0.2f,1.f}
+                                                   : ImVec4{1.0f,0.3f,0.3f,1.f};
+            ImGui::TextColored(stressCol, "[T] %dx  (%d objs)",
+                               mult, (int)drawObjects.size());
         }
 
         // Ghost mode indicator

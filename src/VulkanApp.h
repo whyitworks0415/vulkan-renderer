@@ -384,12 +384,15 @@ private:
     float    lightYaw    = 0.0f;   // 스크롤 휠로 조정하는 방향광 수평 각도 (도)
     float    viewDistMax = 50.0f;  // 원거리 컬링 임계 거리 (m)
     float    smallCullPx = 2.0f;   // 소형 오브젝트 컬링 임계 화면 반지름 (픽셀)
+    bool     extendedFarPlane = false; // 원거리 클리핑 확장 (200 → 5000)
+    float    getFarPlane() const { return extendedFarPlane ? 5000.f : 200.f; }
 
     // ── 씬 조명 (GLTF KHR_lights_punctual) ──────────────────────────────────
     std::vector<SceneLight>      sceneLights;        // buildScene() 에서 채워짐
     bool   sceneLightsOn = true;  // 씬 조명 전체 ON/OFF
     bool   ambientOn     = true;  // 환경광 ON/OFF
     bool   emissiveOn    = true;  // 발광 재질 ON/OFF
+    bool   sceneLightDirty = true; // 조명 상태 변경 시 true → UBO 갱신 후 false
 
     std::vector<VkBuffer>        sceneLightUBOs;
     std::vector<VkDeviceMemory>  sceneLightUBOMemories;
@@ -426,6 +429,59 @@ private:
     void startReplay(const std::string& path = ""); // 재생 시작 ("" = 최신 파일 자동 로드)
     void stopReplay();                  // 재생 종료
     float    lastFrameTime = 0.0f;      // 이전 프레임의 glfwGetTime() 값 (dt 계산용)
+
+    // ── 프레임 시간 히스토리 (128프레임 고정 링버퍼, ImGui PlotLines 용) ─────
+    static constexpr int FRAME_HISTORY_SIZE = 128;
+    float frameTimeHistBuf[FRAME_HISTORY_SIZE] = {};
+    int   frameTimeHistIdx   = 0; // 다음 쓸 위치
+    int   frameTimeHistCount = 0; // 현재 채워진 수 (최대 128)
+
+    // ── 벤치마크 로거 (M 키 → 5초 측정 → CSV 저장) ──────────────────────────
+    struct BenchmarkSample {
+        float fps, frameTimeMs, cpuPercent, gpuPercent;
+        int   drawCalls, culled;
+    };
+    bool  benchmarkActive   = false;
+    float benchmarkDuration = 5.0f;   // 측정 지속 시간 (초)
+    float benchmarkElapsed  = 0.0f;   // 현재까지 경과 시간
+    std::vector<BenchmarkSample> benchmarkSamples;
+    void startBenchmark();
+    void finishBenchmark();
+
+    // ── 자동 벤치마크 (리플레이 기반, M 키) ──────────────────────────────────
+    // 리플레이 경로가 있을 때 M 키 → 10 실험(baseline + 9 최적화 기법) × 5회
+    // 실험마다 리플레이를 재생하며 성능 측정 → 결과 CSV 저장
+    struct AutoBenchRunResult {
+        float avgFps, avgFtMs, minFtMs, maxFtMs;
+        float avgCpu, avgGpu;
+        int   avgDc, avgCulled;
+    };
+    struct AutoBenchExp {
+        std::string                      name;
+        OptFlags                         flags;
+        std::vector<AutoBenchRunResult>  runs;    // 완료된 실행 결과 (최대 5개)
+        std::vector<BenchmarkSample>     current; // 현재 실행 중 수집 중인 샘플
+    };
+    static constexpr int AUTO_BENCH_RUNS  = 5;
+    static constexpr int AUTO_BENCH_TOTAL = 10; // 0=baseline + 1~9=각 최적화 기법
+
+    bool                      autoBenchActive  = false;
+    int                       autoBenchExpIdx  = 0; // 현재 실험 인덱스 (0..9)
+    int                       autoBenchRunIdx  = 0; // 현재 실험의 반복 인덱스 (0..4)
+    std::vector<AutoBenchExp> autoBenchExps;
+    OptFlags                  autoBenchSavedFlags;   // 벤치마크 전 OptFlags 복원용
+    bool                      autoBenchSavedGhost = false; // ghost 모드 복원용
+    std::string               autoBenchReplayPath;   // 사용할 리플레이 파일 경로
+
+    void startAutoBenchmark();   // M 키 → 자동 벤치마크 시작
+    void startAutoBenchRun();    // 현재 실험/반복 리플레이 시작
+    void onAutoBenchRunEnd();    // 리플레이 완료 시 호출 → 다음 실험/반복으로 진행
+    void finishAutoBenchmark();  // 전체 완료 → CSV 저장 + OptFlags 복원
+
+    // ── 스트레스 배율 (T 키: 1x→2x→4x→8x→16x→1x) ──────────────────────────
+    int  stressLevel = 0;                      // 0=1x, 1=2x, 2=4x, 3=8x, 4=16x
+    std::vector<DrawObject> baseDrawObjects;   // stressLevel=0 기준 복사본
+    void applyStress();
 
     // ── 기즈모 (ghost 모드에서 배치 카메라 위치·프러스텀 시각화) ─────────────
     static constexpr int GIZMO_MAX_VERTS = 512;   // 기즈모 버텍스 최대 수

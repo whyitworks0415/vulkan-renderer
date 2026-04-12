@@ -14,6 +14,7 @@ find_package(glfw3 REQUIRED)
 find_package(glm REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_path(TINYGLTF_INCLUDE_DIRS "tiny_gltf.h")
+find_path(TINYOBJ_INCLUDE_DIRS "tiny_obj_loader.h")
 
 # ── Sources ───────────────────────────────────────────────────────────────────
 set(SOURCES
@@ -25,6 +26,7 @@ set(SOURCES
     src/SceneLoader.cpp
     src/Replay.cpp
     src/GLTFLoader.cpp
+    src/OBJLoader.cpp
     src/stb_image_impl.cpp
 )
 
@@ -34,6 +36,7 @@ target_include_directories(VulkanRenderer PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${Vulkan_INCLUDE_DIRS}
     ${TINYGLTF_INCLUDE_DIRS}
+    ${TINYOBJ_INCLUDE_DIRS}
 )
 
 target_link_libraries(VulkanRenderer PRIVATE

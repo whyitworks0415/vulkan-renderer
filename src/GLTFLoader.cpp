@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <unordered_map>
@@ -129,6 +131,7 @@ static void processPrimitive(const tinygltf::Model&              model,
                               const tinygltf::Primitive&           prim,
                               const glm::mat4&                     worldTransform,
                               const std::unordered_map<int, int>&  texIndexMap,
+                              const std::unordered_map<int, int>&  matTexOverride,
                               std::vector<Vertex>&                 verts,
                               std::vector<uint32_t>&               inds,
                               std::vector<DrawObject>&             objects)
@@ -198,6 +201,24 @@ static void processPrimitive(const tinygltf::Model&              model,
                 texIdx = it->second;
         }
 
+        // baseColor 텍스처 없으면 emissiveTexture 를 대신 사용 (용암 등 발광 재질)
+        if (texIdx < 0 && material.emissiveTexture.index >= 0) {
+            int emissiveTexIdx = material.emissiveTexture.index;
+            if (emissiveTexIdx < (int)model.textures.size()) {
+                int imageIdx = model.textures[emissiveTexIdx].source;
+                auto it = texIndexMap.find(imageIdx);
+                if (it != texIndexMap.end())
+                    texIdx = it->second;
+            }
+        }
+
+        // 텍스처 없는 재질 → 외부 텍스처 자동 매칭 (재질 이름 기반)
+        if (texIdx < 0 && prim.material >= 0) {
+            auto ovr = matTexOverride.find(prim.material);
+            if (ovr != matTexOverride.end())
+                texIdx = ovr->second;
+        }
+
         // 메탈릭 / 러프니스 → specularStrength / shininess
         float metallic  = static_cast<float>(pbr.metallicFactor);   // 0..1
         float roughness = static_cast<float>(pbr.roughnessFactor);  // 0..1
@@ -205,17 +226,22 @@ static void processPrimitive(const tinygltf::Model&              model,
         matShininess = glm::mix(256.f, 4.f, roughness * roughness);
 
         // 발광 팩터 (KHR_materials_emissive_strength 확장 포함)
+        // emissiveTexture 가 있는 재질은 emissiveFactor 가 텍스처 곱셈용이므로
+        // 텍스처 없이 상수만 더하면 화면이 하얗게 됨 → 텍스처 있으면 무시
         glm::vec3 emissiveRGB(0.f);
-        if (material.emissiveFactor.size() >= 3)
-            emissiveRGB = glm::vec3(static_cast<float>(material.emissiveFactor[0]),
-                                    static_cast<float>(material.emissiveFactor[1]),
-                                    static_cast<float>(material.emissiveFactor[2]));
-        float emissiveStrength = 1.f;
-        auto esIt = material.extensions.find("KHR_materials_emissive_strength");
-        if (esIt != material.extensions.end() && esIt->second.Has("emissiveStrength"))
-            emissiveStrength = static_cast<float>(
-                esIt->second.Get("emissiveStrength").GetNumberAsDouble());
-        emissiveRGB *= emissiveStrength;
+        if (material.emissiveTexture.index < 0) {
+            // emissiveTexture 없을 때만 상수 발광 사용
+            if (material.emissiveFactor.size() >= 3)
+                emissiveRGB = glm::vec3(static_cast<float>(material.emissiveFactor[0]),
+                                        static_cast<float>(material.emissiveFactor[1]),
+                                        static_cast<float>(material.emissiveFactor[2]));
+            float emissiveStrength = 1.f;
+            auto esIt = material.extensions.find("KHR_materials_emissive_strength");
+            if (esIt != material.extensions.end() && esIt->second.Has("emissiveStrength"))
+                emissiveStrength = static_cast<float>(
+                    esIt->second.Get("emissiveStrength").GetNumberAsDouble());
+            emissiveRGB *= emissiveStrength;
+        }
         float emissiveLum = std::max({emissiveRGB.x, emissiveRGB.y, emissiveRGB.z});
         matEmissive = glm::vec4(emissiveRGB, emissiveLum);
     }
@@ -337,6 +363,7 @@ static void traverseNode(const tinygltf::Model&              model,
                           int                                  nodeIdx,
                           const glm::mat4&                     parentTransform,
                           const std::unordered_map<int, int>&  texIndexMap,
+                          const std::unordered_map<int, int>&  matTexOverride,
                           std::vector<Vertex>&                 verts,
                           std::vector<uint32_t>&               inds,
                           std::vector<DrawObject>&             objects)
@@ -347,11 +374,13 @@ static void traverseNode(const tinygltf::Model&              model,
     if (node.mesh >= 0) {
         const tinygltf::Mesh& mesh = model.meshes[node.mesh];
         for (const auto& prim : mesh.primitives)
-            processPrimitive(model, prim, worldTransform, texIndexMap, verts, inds, objects);
+            processPrimitive(model, prim, worldTransform, texIndexMap, matTexOverride,
+                             verts, inds, objects);
     }
 
     for (int child : node.children)
-        traverseNode(model, child, worldTransform, texIndexMap, verts, inds, objects);
+        traverseNode(model, child, worldTransform, texIndexMap, matTexOverride,
+                     verts, inds, objects);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -420,7 +449,92 @@ bool loadGLTFScene(const std::string&           path,
     }
 
     if (!textures.empty())
-        std::cout << "[GLTFLoader] Decoded " << textures.size() << " texture(s)\n";
+        std::cout << "[GLTFLoader] Decoded " << textures.size() << " embedded texture(s)\n";
+
+    // ── 외부 텍스처 자동 매칭 ─────────────────────────────────────────────────
+    // 1단계: 같은 폴더에 .mtl 파일이 있으면 파싱하여 재질별 map_Kd 파일명 수집
+    // 2단계: 재질 이름 또는 MTL 매핑으로 텍스처 파일 탐색
+    std::unordered_map<int, int> matTexOverride; // material index → textures 배열 인덱스
+
+    {
+        auto lastSlash = path.find_last_of("/\\");
+        std::string baseDir = (lastSlash != std::string::npos) ? path.substr(0, lastSlash + 1) : "";
+
+        // ── MTL 파일 파싱: 재질이름 → map_Kd 파일명 ────────────────────────
+        // Blender 내보내기 MTL의 절대 경로(C:/Lava.png)에서 파일명만 추출
+        std::unordered_map<std::string, std::string> mtlMapKd; // matName → 텍스처 파일명
+        {
+            namespace fs = std::filesystem;
+            fs::path glbPath(path);
+            fs::path mtlPath = glbPath.parent_path() / (glbPath.stem().string() + ".mtl");
+            std::ifstream mtlFile(mtlPath);
+            if (mtlFile.is_open()) {
+                std::string curMat;
+                std::string line;
+                while (std::getline(mtlFile, line)) {
+                    if (line.rfind("newmtl ", 0) == 0)
+                        curMat = line.substr(7);
+                    else if (line.rfind("map_Kd ", 0) == 0 && !curMat.empty()) {
+                        // 절대/상대 경로에서 파일명만 추출
+                        std::string texPath = line.substr(7);
+                        auto slash = texPath.find_last_of("/\\");
+                        std::string fname = (slash != std::string::npos)
+                            ? texPath.substr(slash + 1) : texPath;
+                        mtlMapKd[curMat] = fname;
+                    }
+                }
+                if (!mtlMapKd.empty())
+                    std::cout << "[GLTFLoader] Parsed companion MTL: "
+                              << mtlPath.string() << " (" << mtlMapKd.size() << " textures)\n";
+            }
+        }
+
+        // ── 재질별 텍스처 매칭 ─────────────────────────────────────────────
+        for (int mi = 0; mi < static_cast<int>(model.materials.size()); ++mi) {
+            const auto& mat = model.materials[mi];
+            // 이미 baseColor 또는 emissive 텍스처로 매칭된 재질은 건너뜀
+            if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0) continue;
+            if (mat.emissiveTexture.index >= 0) continue;
+            if (mat.name.empty()) continue;
+
+            // 시도할 파일명 후보: MTL map_Kd 파일명 + 재질 이름
+            std::vector<std::string> candidates;
+            auto mtlIt = mtlMapKd.find(mat.name);
+            if (mtlIt != mtlMapKd.end())
+                candidates.push_back(mtlIt->second); // MTL에서 가져온 파일명 (예: Lava.png)
+            // 재질 이름 + 확장자 (기존 방식)
+            for (const char* ext : {".png", ".jpg", ".jpeg", ".bmp", ".tga"})
+                candidates.push_back(mat.name + ext);
+
+            bool found = false;
+            for (const char* sub : {"", "Textures/", "textures/"}) {
+                if (found) break;
+                for (const auto& fname : candidates) {
+                    std::string tryPath = baseDir + sub + fname;
+                    int w = 0, h = 0, ch = 0;
+                    unsigned char* data = stbi_load(tryPath.c_str(), &w, &h, &ch, 4);
+                    if (!data) continue;
+
+                    int localIdx = static_cast<int>(textures.size());
+                    GLTFTextureData td;
+                    td.width  = w;
+                    td.height = h;
+                    td.pixels.assign(data, data + (size_t)w * h * 4);
+                    stbi_image_free(data);
+                    textures.push_back(std::move(td));
+                    matTexOverride[mi] = localIdx;
+                    std::cout << "[GLTFLoader] Auto-matched texture: "
+                              << mat.name << " -> " << tryPath << "\n";
+                    found = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!matTexOverride.empty())
+        std::cout << "[GLTFLoader] Auto-matched " << matTexOverride.size()
+                  << " external texture(s)\n";
 
     // ── 씬 그래프 순회 ────────────────────────────────────────────────────────
     int sceneIdx = (model.defaultScene >= 0) ? model.defaultScene : 0;
@@ -431,7 +545,8 @@ bool loadGLTFScene(const std::string&           path,
 
     size_t objsBefore = objects.size();
     for (int rootNode : model.scenes[sceneIdx].nodes)
-        traverseNode(model, rootNode, glm::mat4(1.f), texIndexMap, verts, inds, objects);
+        traverseNode(model, rootNode, glm::mat4(1.f), texIndexMap, matTexOverride,
+                     verts, inds, objects);
 
     std::cout << "[GLTFLoader] Loaded '" << sceneDesc.name << "' from " << path
               << "  (" << (objects.size() - objsBefore) << " objects, "
