@@ -1,7 +1,7 @@
 #version 450
 
 layout(location = 0) in vec3 inPosition;
-layout(location = 1) in vec3 inNormal;   // unused – kept for shared Vertex binding
+layout(location = 1) in vec3 inNormal; // 공통 Vertex 바인딩을 맞추기 위해 남겨둔다.
 layout(location = 2) in vec3 inColor;
 
 layout(location = 0) out vec3 fragColor;

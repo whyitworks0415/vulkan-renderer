@@ -11,11 +11,9 @@
 #include <algorithm>
 #include <cstdlib>
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  init  –  앱 시작 시 1회 호출
-//  CPU 델타 계산을 위한 기준값(이전 FILETIME)을 지금 시점으로 초기화하고
-//  GPU PDH 쿼리를 열어 첫 번째 수집(시드)을 수행한다.
-// ─────────────────────────────────────────────────────────────────────────────
+// init  –  앱 시작 시 1회 호출
+// CPU 델타 계산을 위한 기준값(이전 FILETIME)을 지금 시점으로 초기화하고
+// GPU PDH 쿼리를 열어 첫 번째 수집(시드)을 수행한다.
 void PerformanceStats::init() {
     // 시스템 전체 CPU 기준값 시드
     // FILETIME 두 개(이번 - 이전)의 차이로 점유율을 계산하므로, 처음엔 현재 값을 저장
@@ -44,10 +42,8 @@ void PerformanceStats::cleanup() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  update  –  매 프레임 호출
-//  frameTimeMs 는 즉시 갱신, FPS/CPU/RAM/GPU 는 sampleInterval 마다 폴링
-// ─────────────────────────────────────────────────────────────────────────────
+// update  –  매 프레임 호출
+// frameTimeMs 는 즉시 갱신, FPS/CPU/RAM/GPU 는 sampleInterval 마다 폴링
 void PerformanceStats::update(float dt, float sampleInterval) {
     frameTimeMs = dt * 1000.0f; // 직전 프레임 시간을 밀리초로 변환
 
@@ -61,26 +57,22 @@ void PerformanceStats::update(float dt, float sampleInterval) {
         fpsAccum = 0.0f;
         fpsCount = 0;
 
-        // 각 항목을 OS API 로 폴링 (0.5초마다 → 오버헤드 최소화)
-        sampleCPU();        // 시스템 전체 CPU
+        // 각 항목을 OS API 로 폴링 (0.5초마다 -> 오버헤드 최소화)
+        sampleCPU(); // 시스템 전체 CPU
         sampleProcessCPU(); // 이 프로세스 CPU
-        sampleRAM();        // 메모리 사용량
-        sampleGPU();        // GPU 점유율
+        sampleRAM(); // 메모리 사용량
+        sampleGPU(); // GPU 점유율
 
         pollAccum = 0.0f;
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  sampleCPU  –  시스템 전체 CPU 점유율 계산 (모든 논리 코어 평균)
-//
-//  원리: GetSystemTimes 로 idle·kernel·user 시간의 델타를 구하면
-//        total = kernelDiff + userDiff  (idle 포함)
-//        busy  = total - idleDiff
-//        cpuPercent = busy / total * 100
-//
-//  주의: kernel 시간에는 idle 시간이 포함되어 있으므로 idle 을 별도로 빼야 함
-// ─────────────────────────────────────────────────────────────────────────────
+// sampleCPU  –  시스템 전체 CPU 점유율 계산 (모든 논리 코어 평균)
+// 원리: GetSystemTimes 로 idle·kernel·user 시간의 델타를 구하면
+// total = kernelDiff + userDiff  (idle 포함)
+// busy  = total - idleDiff  (실제 사용 시간)
+// cpuPercent = busy / total * 100  (CPU 점유율)
+// 주의: kernel 시간에는 idle 시간이 포함되어 있으므로 idle 을 별도로 빼야 함
 void PerformanceStats::sampleCPU() {
     FILETIME idle, kernel, user;
     GetSystemTimes(&idle, &kernel, &user);
@@ -107,13 +99,10 @@ void PerformanceStats::sampleCPU() {
         cpuPercent = (float)(total - idleDiff) / (float)total * 100.0f;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  sampleProcessCPU  –  이 프로세스만의 CPU 점유율 계산
-//
-//  원리: GetProcessTimes 로 이 프로세스의 kernel+user 시간 델타를 구하고
-//        sampleCPU() 가 방금 측정한 시스템 총 시간(lastSysTotal) 으로 나눈다.
-//        → 프로세스가 시스템 CPU 의 몇 %를 쓰는지 파악 가능
-// ─────────────────────────────────────────────────────────────────────────────
+// sampleProcessCPU  –  이 프로세스만의 CPU 점유율 계산
+// 원리: GetProcessTimes 로 이 프로세스의 kernel+user 시간 델타를 구하고
+// sampleCPU() 가 방금 측정한 시스템 총 시간(lastSysTotal) 으로 나눈다.
+// → 프로세스가 시스템 CPU 의 몇 %를 쓰는지 파악 가능
 void PerformanceStats::sampleProcessCPU() {
     FILETIME ct, et, kt, ut;
     GetProcessTimes(GetCurrentProcess(), &ct, &et, &kt, &ut);
@@ -126,26 +115,21 @@ void PerformanceStats::sampleProcessCPU() {
     lastProcKernel = curK;
     lastProcUser   = curU;
 
-    // 시스템 총 시간 대비 비율 → 퍼센트
+    // 시스템 총 시간 대비 비율 -> 퍼센트
     if (lastSysTotal > 0)
         processCpuPercent = (float)procDiff / (float)lastSysTotal * 100.0f;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  sampleRAM  –  이 프로세스의 Working Set(물리 RAM 사용량)을 MB 단위로 조회
-// ─────────────────────────────────────────────────────────────────────────────
+// sampleRAM  –  이 프로세스의 Working Set(물리 RAM 사용량)을 MB 단위로 조회
 void PerformanceStats::sampleRAM() {
     PROCESS_MEMORY_COUNTERS pmc{};
     if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
         ramMB = (float)(pmc.WorkingSetSize) / (1024.0f * 1024.0f);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  initGPU  –  PDH 를 이용해 GPU Engine 3D 점유율 카운터를 등록
-//
-//  와일드카드(*)로 모든 GPU 엔진 인스턴스를 한 번에 구독한다.
-//  PDH 레이트 카운터는 첫 번째 수집이 기준값이 되므로, 여기서 1회 시드한다.
-// ─────────────────────────────────────────────────────────────────────────────
+// initGPU  –  PDH 를 이용해 GPU Engine 3D 점유율 카운터를 등록
+// 와일드카드(*)로 모든 GPU 엔진 인스턴스를 한 번에 구독한다.
+// PDH 레이트 카운터는 첫 번째 수집이 기준값이 되므로, 여기서 1회 시드한다.
 void PerformanceStats::initGPU() {
     PDH_HQUERY q;
     if (PdhOpenQuery(nullptr, 0, &q) != ERROR_SUCCESS) return;
@@ -165,13 +149,10 @@ void PerformanceStats::initGPU() {
     gpuCounter = c;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  sampleGPU  –  등록된 GPU 카운터를 수집하고 모든 엔진 인스턴스의 값을 합산
-//
-//  GPU 는 물리적으로 여러 엔진(컴퓨트·복사·디코드 등)을 가질 수 있고,
-//  PDH 는 각 엔진을 개별 인스턴스로 반환한다.
-//  3D 엔진만 필터했으므로 합산해도 100% 를 넘지 않는다.
-// ─────────────────────────────────────────────────────────────────────────────
+// sampleGPU  –  등록된 GPU 카운터를 수집하고 모든 엔진 인스턴스의 값을 합산
+// GPU 는 물리적으로 여러 엔진(컴퓨트·복사·디코드 등)을 가질 수 있고,
+// PDH 는 각 엔진을 개별 인스턴스로 반환한다.
+// 3D 엔진만 필터했으므로 합산해도 100% 를 넘지 않는다.
 void PerformanceStats::sampleGPU() {
     if (!pdhQuery || !gpuCounter) return;
 

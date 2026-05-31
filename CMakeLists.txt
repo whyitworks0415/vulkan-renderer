@@ -4,19 +4,19 @@ project(VulkanRenderer CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ── Vulkan ────────────────────────────────────────────────────────────────────
+# Vulkan 패키지 찾기
 find_package(Vulkan REQUIRED)
 
-# ── GLFW (via vcpkg or system) ────────────────────────────────────────────────
+# GLFW 패키지 찾기
 find_package(glfw3 REQUIRED)
 
-# ── GLM (header-only) ─────────────────────────────────────────────────────────
+# GLM과 보조 헤더 찾기
 find_package(glm REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_path(TINYGLTF_INCLUDE_DIRS "tiny_gltf.h")
 find_path(TINYOBJ_INCLUDE_DIRS "tiny_obj_loader.h")
 
-# ── Sources ───────────────────────────────────────────────────────────────────
+# 빌드 대상 소스 파일
 set(SOURCES
     src/main.cpp
     src/VulkanApp.cpp
@@ -46,7 +46,7 @@ target_link_libraries(VulkanRenderer PRIVATE
     imgui::imgui
 )
 
-# ── Copy shaders dir next to executable ───────────────────────────────────────
+# 컴파일된 셰이더 복사
 add_custom_command(TARGET VulkanRenderer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/shaders/spv
@@ -54,7 +54,7 @@ add_custom_command(TARGET VulkanRenderer POST_BUILD
     COMMENT "Copying compiled SPIR-V shaders"
 )
 
-# ── Copy STL assets next to executable ────────────────────────────────────────
+# 기본 에셋 복사
 add_custom_command(TARGET VulkanRenderer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
         $<TARGET_FILE_DIR:VulkanRenderer>/assets
@@ -71,7 +71,7 @@ add_custom_command(TARGET VulkanRenderer POST_BUILD
     COMMENT "Copying STL assets"
 )
 
-# ── Copy maps directory next to executable ────────────────────────────────────
+# 맵 디렉터리 복사
 add_custom_command(TARGET VulkanRenderer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/maps
@@ -79,21 +79,21 @@ add_custom_command(TARGET VulkanRenderer POST_BUILD
     COMMENT "Copying scene maps"
 )
 
-# ── Create replays directory next to executable ───────────────────────────────
+# 리플레이 디렉터리 생성
 add_custom_command(TARGET VulkanRenderer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
         $<TARGET_FILE_DIR:VulkanRenderer>/replays
     COMMENT "Creating replays directory"
 )
 
-# ── Preprocessor ──────────────────────────────────────────────────────────────
+# 컴파일 정의
 target_compile_definitions(VulkanRenderer PRIVATE
     $<$<CONFIG:Debug>:ENABLE_VALIDATION_LAYERS>
     GLM_FORCE_RADIANS
     GLM_FORCE_DEPTH_ZERO_TO_ONE
 )
 
-# Suppress code-page warning on MSVC (source files are UTF-8)
+# MSVC에서도 UTF-8 소스 파일로 컴파일되도록 한다.
 if(MSVC)
     target_compile_options(VulkanRenderer PRIVATE /utf-8)
 endif()

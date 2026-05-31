@@ -52,19 +52,26 @@ cmake --build build --config Release
 
 ### 3. 맵 파일 배치
 
-`.glb`, `.gltf`, `.obj` 맵 파일을 `maps/` 폴더 또는 하위 폴더에 넣는다. 프로그램이 재귀적으로 탐색한다.
+맵은 번호로 구분하고 종류별 폴더로 나눈다. 프로그램이 `maps/`를 재귀 탐색하며, `map/` 폴더의 파일을 목록 맨 앞에 정렬한다(숫자 순).
 
 ```
 maps/
-  test_city.glb
-  InfernoWorld/
-    InfernoWorld.glb
-    InfernoWorld.mtl
-    Lava.png
+  map/
+    1.glb        # 맵 모델 (숫자 이름)
+    1.blend      # (선택) 블렌더 원본 — 같은 이름 .glb가 있으면 맵 목록에서 자동 제외
+    2.glb
+  mtl/
+    2.mtl        # 같은 번호 glb의 동반 머티리얼 (map_Kd로 텍스처 파일명 제공)
+  texture/
+    Lava.png     # 외부 텍스처 — MTL의 map_Kd 파일명 그대로, 평탄하게 배치
     ...
+  test_city.glb  # 기본 맵 (시작 시 로드)
+  *.scene        # 절차적 씬 (별도 텍스트 형식)
 ```
 
-텍스처 파일(`.png`, `.jpg` 등)은 `.glb`/`.obj`와 같은 폴더에 배치한다.
+- 한 맵은 `map/N.glb` + (선택) `mtl/N.mtl` + (선택) `texture/`(원래 파일명)으로 구성한다.
+- `.glb` 내장 텍스처는 그대로 쓰고, 외부 텍스처는 동반 MTL의 `map_Kd` 파일명을 `maps/texture/`에서 찾는다.
+- 텍스처가 없는 단색 머티리얼 맵은 `mtl`/`texture`가 비어 있어도 된다.
 
 ## 실행
 
@@ -90,6 +97,7 @@ cd build/Release
 |---|---|
 | TAB | 다음 맵으로 전환 |
 | G | Ghost(관찰자) 모드 ON/OFF |
+| C | 시네마틱 카메라 (부드러운 이동/회전) ON/OFF |
 | F11 | 전체화면 토글 |
 | ESC | 종료 |
 

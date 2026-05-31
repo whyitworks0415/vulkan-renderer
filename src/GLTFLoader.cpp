@@ -6,24 +6,24 @@
 #include <tiny_gltf.h>
 
 #include "GLTFLoader.h"
-#include "VulkanApp.h"   // Vertex, DrawObject, PushConstants
+#include "VulkanApp.h" // 사용하는 렌더링 타입: Vertex, DrawObject, PushConstants
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  computeBoundSphereLocal
-//  로컬 공간 AABB 와 월드 변환 행렬로 바운딩 구를 계산한다.
-//  VulkanApp::computeBoundSphere 와 동일한 알고리즘 (AABB 8 코너 변환).
-// ─────────────────────────────────────────────────────────────────────────────
+// computeBoundSphereLocal
+// 로컬 공간 AABB 와 월드 변환 행렬로 바운딩 구를 계산한다.
+// VulkanApp::computeBoundSphere 와 동일한 알고리즘 (AABB 8 코너 변환).
 static void computeBoundSphereLocal(DrawObject&      obj,
                                     const glm::vec3& bmin,
                                     const glm::vec3& bmax)
@@ -78,11 +78,145 @@ static void alignTriangleWindingToNormals(const std::vector<Vertex>& verts,
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  nodeLocalTransform
-//  GLTF 노드의 로컬 변환 행렬을 반환한다.
-//  matrix 가 있으면 그대로 사용, 없으면 TRS 에서 조합.
-// ─────────────────────────────────────────────────────────────────────────────
+static bool buildClusteredLod(std::vector<Vertex>&          verts,
+                              std::vector<uint32_t>&        inds,
+                              uint32_t                      vertBase,
+                              uint32_t                      vertCount,
+                              uint32_t                      idxStart,
+                              uint32_t                      idxCount,
+                              const glm::vec3&              bmin,
+                              const glm::vec3&              bmax,
+                              int                           maxCellsOnLongestAxis,
+                              uint32_t&                     outStart,
+                              uint32_t&                     outCount)
+{
+    struct Accum {
+        glm::vec3 pos{};
+        glm::vec3 normal{};
+        glm::vec3 color{};
+        glm::vec2 uv{};
+        uint32_t  count = 0;
+    };
+
+    const glm::vec3 extent = bmax - bmin;
+    const float maxExtent = std::max({extent.x, extent.y, extent.z});
+    if (maxExtent <= 1e-6f || vertCount == 0 || idxCount < 3)
+        return false;
+
+    glm::ivec3 cells(1);
+    for (int axis = 0; axis < 3; ++axis) {
+        float e = extent[axis];
+        cells[axis] = (e <= 1e-6f)
+            ? 1
+            : std::max(1, (int)std::ceil(maxCellsOnLongestAxis * e / maxExtent));
+    }
+
+    auto cellKey = [&](const glm::vec3& p) -> uint64_t {
+        glm::ivec3 c(0);
+        for (int axis = 0; axis < 3; ++axis) {
+            if (extent[axis] > 1e-6f) {
+                float t = (p[axis] - bmin[axis]) / extent[axis];
+                c[axis] = glm::clamp((int)std::floor(t * cells[axis]), 0, cells[axis] - 1);
+            }
+        }
+        return (uint64_t)c.x | ((uint64_t)c.y << 16) | ((uint64_t)c.z << 32);
+    };
+
+    std::unordered_map<uint64_t, uint32_t> clusterMap;
+    std::vector<Accum> clusters;
+    std::vector<uint32_t> remap(vertCount, UINT32_MAX);
+
+    for (uint32_t i = 0; i < vertCount; ++i) {
+        const Vertex& v = verts[vertBase + i];
+        uint64_t key = cellKey(v.pos);
+        auto it = clusterMap.find(key);
+        uint32_t clusterIdx = 0;
+        if (it == clusterMap.end()) {
+            clusterIdx = static_cast<uint32_t>(clusters.size());
+            clusterMap.emplace(key, clusterIdx);
+            clusters.push_back({});
+        } else {
+            clusterIdx = it->second;
+        }
+
+        Accum& a = clusters[clusterIdx];
+        a.pos    += v.pos;
+        a.normal += v.normal;
+        a.color  += v.color;
+        a.uv     += v.uv;
+        ++a.count;
+        remap[i] = clusterIdx;
+    }
+
+    if (clusters.size() < 3 || clusters.size() >= vertCount)
+        return false;
+
+    std::vector<uint32_t> lodIndices;
+    lodIndices.reserve(idxCount);
+    std::unordered_set<uint64_t> seenTriangles;
+
+    auto triKey = [](uint32_t a, uint32_t b, uint32_t c) -> uint64_t {
+        uint32_t lo = std::min({a, b, c});
+        uint32_t hi = std::max({a, b, c});
+        uint32_t mid = a + b + c - lo - hi;
+        return (uint64_t)lo | ((uint64_t)mid << 21) | ((uint64_t)hi << 42);
+    };
+
+    for (uint32_t i = 0; i + 2 < idxCount; i += 3) {
+        uint32_t src[3] = {
+            inds[idxStart + i + 0],
+            inds[idxStart + i + 1],
+            inds[idxStart + i + 2],
+        };
+        if (src[0] < vertBase || src[1] < vertBase || src[2] < vertBase)
+            return false;
+        src[0] -= vertBase;
+        src[1] -= vertBase;
+        src[2] -= vertBase;
+        if (src[0] >= vertCount || src[1] >= vertCount || src[2] >= vertCount)
+            return false;
+
+        uint32_t a = remap[src[0]];
+        uint32_t b = remap[src[1]];
+        uint32_t c = remap[src[2]];
+        if (a == b || b == c || c == a)
+            continue;
+
+        uint64_t key = triKey(a, b, c);
+        if (!seenTriangles.insert(key).second)
+            continue;
+
+        lodIndices.push_back(a);
+        lodIndices.push_back(b);
+        lodIndices.push_back(c);
+    }
+
+    if (lodIndices.size() < 12 || lodIndices.size() >= idxCount)
+        return false;
+
+    const uint32_t lodVertStart = static_cast<uint32_t>(verts.size());
+    for (const Accum& a : clusters) {
+        const float inv = 1.0f / static_cast<float>(a.count);
+        Vertex v{};
+        v.pos    = a.pos * inv;
+        v.normal = (glm::dot(a.normal, a.normal) > 1e-10f)
+                 ? glm::normalize(a.normal)
+                 : glm::vec3(0.f, 1.f, 0.f);
+        v.color  = a.color * inv;
+        v.uv     = a.uv * inv;
+        verts.push_back(v);
+    }
+
+    outStart = static_cast<uint32_t>(inds.size());
+    for (uint32_t idx : lodIndices)
+        inds.push_back(lodVertStart + idx);
+    outCount = static_cast<uint32_t>(inds.size()) - outStart;
+    return true;
+}
+
+// nodeLocalTransform
+// GLTF 노드의 로컬 변환 행렬을 반환한다.
+// matrix 가 있으면 그대로 사용, 없으면 TRS 에서 조합.
 static glm::mat4 nodeLocalTransform(const tinygltf::Node& node)
 {
     if (!node.matrix.empty()) {
@@ -104,9 +238,9 @@ static glm::mat4 nodeLocalTransform(const tinygltf::Node& node)
 
     if (!node.rotation.empty()) {
         // GLTF 쿼터니언 순서: [x, y, z, w]
-        glm::quat q(static_cast<float>(node.rotation[3]),  // w
-                    static_cast<float>(node.rotation[0]),  // x
-                    static_cast<float>(node.rotation[1]),  // y
+        glm::quat q(static_cast<float>(node.rotation[3]), // w
+                    static_cast<float>(node.rotation[0]), // x
+                    static_cast<float>(node.rotation[1]), // y
                     static_cast<float>(node.rotation[2])); // z
         R = glm::mat4_cast(q);
     }
@@ -117,16 +251,13 @@ static glm::mat4 nodeLocalTransform(const tinygltf::Node& node)
                                  static_cast<float>(node.scale[1]),
                                  static_cast<float>(node.scale[2])));
 
-    return T * R * S; // 오른쪽부터 적용: Scale → Rotate → Translate
+    return T * R * S; // 오른쪽부터 적용: Scale -> Rotate -> Translate
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  processPrimitive
-//  GLTF 메시의 프리미티브 하나를 글로벌 verts/inds 에 추가하고
-//  해당 DrawObject 를 objects 에 추가한다.
-//
-//  texIndexMap: GLTF image index → 로컬 텍스처 배열 인덱스 (없으면 -1)
-// ─────────────────────────────────────────────────────────────────────────────
+// processPrimitive
+// GLTF 메시의 프리미티브 하나를 글로벌 verts/inds 에 추가하고
+// 해당 DrawObject 를 objects 에 추가한다.
+// texIndexMap: GLTF image index -> 로컬 텍스처 배열 인덱스 (없으면 -1)
 static void processPrimitive(const tinygltf::Model&              model,
                               const tinygltf::Primitive&           prim,
                               const glm::mat4&                     worldTransform,
@@ -142,14 +273,14 @@ static void processPrimitive(const tinygltf::Model&              model,
     auto posIt = prim.attributes.find("POSITION");
     if (posIt == prim.attributes.end()) return; // 위치 없으면 건너뜀
 
-    // ── POSITION 버퍼 ────────────────────────────────────────────────────────
+    // POSITION 버퍼
     const tinygltf::Accessor&   posAcc  = model.accessors[posIt->second];
     const tinygltf::BufferView& posView = model.bufferViews[posAcc.bufferView];
     const uint8_t* posPtr = model.buffers[posView.buffer].data.data()
                           + posView.byteOffset + posAcc.byteOffset;
     int posStride = posAcc.ByteStride(posView);
 
-    // ── NORMAL 버퍼 (선택적) ─────────────────────────────────────────────────
+    // NORMAL 버퍼 (선택적)
     const uint8_t* nrmPtr    = nullptr;
     int            nrmStride = 12;
     auto nrmIt = prim.attributes.find("NORMAL");
@@ -161,7 +292,7 @@ static void processPrimitive(const tinygltf::Model&              model,
         nrmStride = nrmAcc.ByteStride(nrmView);
     }
 
-    // ── TEXCOORD_0 버퍼 (선택적) ─────────────────────────────────────────────
+    // TEXCOORD_0 버퍼 (선택적)
     const uint8_t* uvPtr    = nullptr;
     int            uvStride = 8; // 기본값: float2 (8 bytes)
     auto uvIt = prim.attributes.find("TEXCOORD_0");
@@ -173,7 +304,7 @@ static void processPrimitive(const tinygltf::Model&              model,
         uvStride = uvAcc.ByteStride(uvView);
     }
 
-    // ── 재질 베이스 컬러 + 텍스처 인덱스 + PBR 속성 ─────────────────────────
+    // 재질 베이스 컬러 + 텍스처 인덱스 + PBR 속성
     glm::vec3 matColor(0.8f);
     int       texIdx      = -1;
     bool      twoSided    = false;
@@ -212,22 +343,22 @@ static void processPrimitive(const tinygltf::Model&              model,
             }
         }
 
-        // 텍스처 없는 재질 → 외부 텍스처 자동 매칭 (재질 이름 기반)
+        // 텍스처 없는 재질 -> 외부 텍스처 자동 매칭 (재질 이름 기반)
         if (texIdx < 0 && prim.material >= 0) {
             auto ovr = matTexOverride.find(prim.material);
             if (ovr != matTexOverride.end())
                 texIdx = ovr->second;
         }
 
-        // 메탈릭 / 러프니스 → specularStrength / shininess
-        float metallic  = static_cast<float>(pbr.metallicFactor);   // 0..1
-        float roughness = static_cast<float>(pbr.roughnessFactor);  // 0..1
+        // 메탈릭 / 러프니스 -> specularStrength / shininess
+        float metallic  = static_cast<float>(pbr.metallicFactor); // 0..1
+        float roughness = static_cast<float>(pbr.roughnessFactor); // 0..1
         matSpecStr   = glm::mix(0.05f, 0.95f, metallic);
         matShininess = glm::mix(256.f, 4.f, roughness * roughness);
 
         // 발광 팩터 (KHR_materials_emissive_strength 확장 포함)
         // emissiveTexture 가 있는 재질은 emissiveFactor 가 텍스처 곱셈용이므로
-        // 텍스처 없이 상수만 더하면 화면이 하얗게 됨 → 텍스처 있으면 무시
+        // 텍스처 없이 상수만 더하면 화면이 하얗게 됨 -> 텍스처 있으면 무시
         glm::vec3 emissiveRGB(0.f);
         if (material.emissiveTexture.index < 0) {
             // emissiveTexture 없을 때만 상수 발광 사용
@@ -246,7 +377,7 @@ static void processPrimitive(const tinygltf::Model&              model,
         matEmissive = glm::vec4(emissiveRGB, emissiveLum);
     }
 
-    // ── 버텍스 생성 ──────────────────────────────────────────────────────────
+    // 버텍스 생성
     uint32_t  vertBase = static_cast<uint32_t>(verts.size());
     glm::vec3 bboxMin( std::numeric_limits<float>::max());
     glm::vec3 bboxMax(-std::numeric_limits<float>::max());
@@ -276,7 +407,7 @@ static void processPrimitive(const tinygltf::Model&              model,
         verts.push_back(vtx);
     }
 
-    // ── 인덱스 생성 ──────────────────────────────────────────────────────────
+    // 인덱스 생성
     uint32_t idxStart = static_cast<uint32_t>(inds.size());
 
     if (prim.indices >= 0) {
@@ -310,7 +441,7 @@ static void processPrimitive(const tinygltf::Model&              model,
     if (nrmPtr)
         alignTriangleWindingToNormals(verts, inds, idxStart, idxCount);
 
-    // ── DrawObject 생성 ──────────────────────────────────────────────────────
+    // DrawObject 생성
     DrawObject obj{};
     obj.indexStart            = idxStart;
     obj.indexCount            = idxCount;
@@ -328,37 +459,35 @@ static void processPrimitive(const tinygltf::Model&              model,
 
     computeBoundSphereLocal(obj, bboxMin, bboxMax);
 
-    // ── LOD 자동 생성 (삼각형 12개 이상인 메시) ──────────────────────────────
-    //   LOD1: 2삼각형 간격 샘플 (~50%)  /  LOD2: 4삼각형 간격 샘플 (~25%)
+    // LOD 자동 생성.
+    // 삼각형을 삭제하지 않고 정점 클러스터링으로 새 LOD 메시를 만든다.
+    // LOD1/LOD2는 격자 밀도를 다르게 해서 원본 표면의 연결성을 유지한다.
     const uint32_t triCount = idxCount / 3;
-    if (triCount >= 12) {
-        std::vector<uint32_t> orig(inds.begin() + idxStart,
-                                   inds.begin() + idxStart + idxCount);
+    if (triCount >= 48) {
+        uint32_t lod1Start = 0, lod1Count = 0;
+        uint32_t lod2Start = 0, lod2Count = 0;
 
-        uint32_t lod1Start = static_cast<uint32_t>(inds.size());
-        for (uint32_t t = 0; t < triCount; t += 2) {
-            inds.push_back(orig[t*3+0]); inds.push_back(orig[t*3+1]); inds.push_back(orig[t*3+2]);
+        if (buildClusteredLod(verts, inds, vertBase, static_cast<uint32_t>(posAcc.count),
+                              idxStart, idxCount, bboxMin, bboxMax,
+                              16, lod1Start, lod1Count)) {
+            obj.lods[0] = {lod1Start, lod1Count, worldTransform};
+            obj.numLods = 1;
         }
-        uint32_t lod1Count = static_cast<uint32_t>(inds.size()) - lod1Start;
 
-        uint32_t lod2Start = static_cast<uint32_t>(inds.size());
-        for (uint32_t t = 0; t < triCount; t += 4) {
-            inds.push_back(orig[t*3+0]); inds.push_back(orig[t*3+1]); inds.push_back(orig[t*3+2]);
+        if (obj.numLods == 1 &&
+            buildClusteredLod(verts, inds, vertBase, static_cast<uint32_t>(posAcc.count),
+                              idxStart, idxCount, bboxMin, bboxMax,
+                              8, lod2Start, lod2Count)) {
+            obj.lods[1] = {lod2Start, lod2Count, worldTransform};
+            obj.numLods = 2;
         }
-        uint32_t lod2Count = static_cast<uint32_t>(inds.size()) - lod2Start;
-
-        obj.lods[0] = {lod1Start, lod1Count, worldTransform};
-        obj.lods[1] = {lod2Start, lod2Count, worldTransform};
-        obj.numLods  = 2;
     }
 
     objects.push_back(obj);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  traverseNode
-//  GLTF 씬 그래프를 재귀 순회한다.
-// ─────────────────────────────────────────────────────────────────────────────
+// traverseNode
+// GLTF 씬 그래프를 재귀 순회한다.
 static void traverseNode(const tinygltf::Model&              model,
                           int                                  nodeIdx,
                           const glm::mat4&                     parentTransform,
@@ -383,9 +512,7 @@ static void traverseNode(const tinygltf::Model&              model,
                      verts, inds, objects);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  loadGLTFScene  – 공개 진입점
-// ─────────────────────────────────────────────────────────────────────────────
+// loadGLTFScene  – 공개 진입점
 bool loadGLTFScene(const std::string&           path,
                    std::vector<Vertex>&          verts,
                    std::vector<uint32_t>&        inds,
@@ -413,7 +540,7 @@ bool loadGLTFScene(const std::string&           path,
         return false;
     }
 
-    // ── 씬 이름 ──────────────────────────────────────────────────────────────
+    // 씬 이름
     if (!model.scenes.empty() && !model.scenes[0].name.empty())
         sceneDesc.name = model.scenes[0].name;
     else {
@@ -421,7 +548,7 @@ bool loadGLTFScene(const std::string&           path,
         sceneDesc.name = (slash != std::string::npos) ? path.substr(slash + 1) : path;
     }
 
-    // ── GLTF 카메라 노드에서 초기 위치 추출 ──────────────────────────────────
+    // GLTF 카메라 노드에서 초기 위치 추출
     for (const auto& node : model.nodes) {
         if (node.camera >= 0 && !node.translation.empty()) {
             sceneDesc.cameraPos = glm::vec3(
@@ -432,10 +559,10 @@ bool loadGLTFScene(const std::string&           path,
         }
     }
 
-    // ── 텍스처 디코딩 ─────────────────────────────────────────────────────────
+    // 텍스처 디코딩
     // tinygltf + stb_image 가 GLB 내장 이미지를 RGBA8 로 자동 디코딩한다.
     // model.images[i].image 에 RGBA8 픽셀 데이터가 들어있다.
-    std::unordered_map<int, int> texIndexMap; // GLTF image index → 로컬 인덱스
+    std::unordered_map<int, int> texIndexMap; // GLTF image index -> 로컬 인덱스
     for (int i = 0; i < static_cast<int>(model.images.size()); ++i) {
         const auto& img = model.images[i];
         if (!img.image.empty() && img.width > 0 && img.height > 0) {
@@ -451,23 +578,41 @@ bool loadGLTFScene(const std::string&           path,
     if (!textures.empty())
         std::cout << "[GLTFLoader] Decoded " << textures.size() << " embedded texture(s)\n";
 
-    // ── 외부 텍스처 자동 매칭 ─────────────────────────────────────────────────
+    // 외부 텍스처 자동 매칭
     // 1단계: 같은 폴더에 .mtl 파일이 있으면 파싱하여 재질별 map_Kd 파일명 수집
     // 2단계: 재질 이름 또는 MTL 매핑으로 텍스처 파일 탐색
-    std::unordered_map<int, int> matTexOverride; // material index → textures 배열 인덱스
+    std::unordered_map<int, int> matTexOverride; // material index -> textures 배열 인덱스
 
     {
-        auto lastSlash = path.find_last_of("/\\");
-        std::string baseDir = (lastSlash != std::string::npos) ? path.substr(0, lastSlash + 1) : "";
+        namespace fs = std::filesystem;
+        fs::path glbPath(path);
+        fs::path mapDir = glbPath.parent_path();
+        fs::path assetRoot = mapDir;
+        std::string mapDirName = mapDir.filename().string();
+        std::transform(mapDirName.begin(), mapDirName.end(), mapDirName.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (mapDirName == "map")
+            assetRoot = mapDir.parent_path();
 
-        // ── MTL 파일 파싱: 재질이름 → map_Kd 파일명 ────────────────────────
+        // MTL 파일 파싱: 재질이름 -> map_Kd 파일명
         // Blender 내보내기 MTL의 절대 경로(C:/Lava.png)에서 파일명만 추출
-        std::unordered_map<std::string, std::string> mtlMapKd; // matName → 텍스처 파일명
+        std::unordered_map<std::string, std::string> mtlMapKd; // matName -> 텍스처 파일명
         {
-            namespace fs = std::filesystem;
-            fs::path glbPath(path);
-            fs::path mtlPath = glbPath.parent_path() / (glbPath.stem().string() + ".mtl");
-            std::ifstream mtlFile(mtlPath);
+            std::vector<fs::path> mtlCandidates = {
+                mapDir / (glbPath.stem().string() + ".mtl"),
+                assetRoot / "mtl" / (glbPath.stem().string() + ".mtl"),
+                assetRoot / "MTL" / (glbPath.stem().string() + ".mtl"),
+            };
+            fs::path mtlPath;
+            std::ifstream mtlFile;
+            for (const fs::path& candidate : mtlCandidates) {
+                mtlFile.open(candidate);
+                if (mtlFile.is_open()) {
+                    mtlPath = candidate;
+                    break;
+                }
+                mtlFile.clear();
+            }
             if (mtlFile.is_open()) {
                 std::string curMat;
                 std::string line;
@@ -489,7 +634,7 @@ bool loadGLTFScene(const std::string&           path,
             }
         }
 
-        // ── 재질별 텍스처 매칭 ─────────────────────────────────────────────
+        // 재질별 텍스처 매칭
         for (int mi = 0; mi < static_cast<int>(model.materials.size()); ++mi) {
             const auto& mat = model.materials[mi];
             // 이미 baseColor 또는 emissive 텍스처로 매칭된 재질은 건너뜀
@@ -507,10 +652,22 @@ bool loadGLTFScene(const std::string&           path,
                 candidates.push_back(mat.name + ext);
 
             bool found = false;
-            for (const char* sub : {"", "Textures/", "textures/"}) {
+            std::vector<fs::path> textureDirs = {
+                mapDir,
+                mapDir / "Textures",
+                mapDir / "textures",
+                mapDir / "texture",
+                assetRoot / "texture",
+                assetRoot / "textures",
+                assetRoot / "Textures",
+            };
+            for (const fs::path& texDir : textureDirs) {
                 if (found) break;
                 for (const auto& fname : candidates) {
-                    std::string tryPath = baseDir + sub + fname;
+                    fs::path tryFsPath(fname);
+                    if (!tryFsPath.is_absolute())
+                        tryFsPath = texDir / fname;
+                    std::string tryPath = tryFsPath.string();
                     int w = 0, h = 0, ch = 0;
                     unsigned char* data = stbi_load(tryPath.c_str(), &w, &h, &ch, 4);
                     if (!data) continue;
@@ -536,7 +693,7 @@ bool loadGLTFScene(const std::string&           path,
         std::cout << "[GLTFLoader] Auto-matched " << matTexOverride.size()
                   << " external texture(s)\n";
 
-    // ── 씬 그래프 순회 ────────────────────────────────────────────────────────
+    // 씬 그래프 순회
     int sceneIdx = (model.defaultScene >= 0) ? model.defaultScene : 0;
     if (sceneIdx >= static_cast<int>(model.scenes.size())) {
         std::cerr << "[GLTFLoader] No scenes found in: " << path << "\n";
@@ -552,7 +709,7 @@ bool loadGLTFScene(const std::string&           path,
               << "  (" << (objects.size() - objsBefore) << " objects, "
               << verts.size() << " vertices)\n";
 
-    // ── KHR_lights_punctual 조명 추출 ─────────────────────────────────────────
+    // KHR_lights_punctual 조명 추출
     // 1단계: 전역 조명 정의 목록 구성
     std::vector<SceneLight> lightDefs;
     auto glbLightIt = model.extensions.find("KHR_lights_punctual");
@@ -594,7 +751,7 @@ bool loadGLTFScene(const std::string&           path,
         }
     }
 
-    // 2단계: 노드 순회 → 조명 인스턴스 위치/방향 추출
+    // 2단계: 노드 순회 -> 조명 인스턴스 위치/방향 추출
     if (!lightDefs.empty()) {
         std::function<void(int, const glm::mat4&)> traverseLights;
         traverseLights = [&](int nodeIdx, const glm::mat4& parentTransform) {

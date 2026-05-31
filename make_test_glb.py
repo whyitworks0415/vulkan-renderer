@@ -20,14 +20,14 @@ def make_box(cx, cy, cz, sx, sy, sz, color):
     """
     hx, hy, hz = sx/2, sy/2, sz/2
 
-    # 각 면 (법선, 4 버텍스 순서)
+    # 각 면을 법선과 네 꼭짓점 순서로 정의한다.
     faces = [
-        ( 0,  1,  0, [(-hx,hy,-hz),( hx,hy,-hz),( hx,hy, hz),(-hx,hy, hz)]),  # +Y top
-        ( 0, -1,  0, [(-hx,-hy, hz),( hx,-hy, hz),( hx,-hy,-hz),(-hx,-hy,-hz)]), # -Y bottom
-        ( 0,  0,  1, [(-hx,-hy, hz),( hx,-hy, hz),( hx, hy, hz),(-hx, hy, hz)]), # +Z front
-        ( 0,  0, -1, [( hx,-hy,-hz),(-hx,-hy,-hz),(-hx, hy,-hz),( hx, hy,-hz)]), # -Z back
-        ( 1,  0,  0, [( hx,-hy, hz),( hx,-hy,-hz),( hx, hy,-hz),( hx, hy, hz)]), # +X right
-        (-1,  0,  0, [(-hx,-hy,-hz),(-hx,-hy, hz),(-hx, hy, hz),(-hx, hy,-hz)]), # -X left
+        ( 0,  1,  0, [(-hx,hy,-hz),( hx,hy,-hz),( hx,hy, hz),(-hx,hy, hz)]),  # +Y 위쪽 면
+        ( 0, -1,  0, [(-hx,-hy, hz),( hx,-hy, hz),( hx,-hy,-hz),(-hx,-hy,-hz)]),  # -Y 아래쪽 면
+        ( 0,  0,  1, [(-hx,-hy, hz),( hx,-hy, hz),( hx, hy, hz),(-hx, hy, hz)]),  # +Z 앞쪽 면
+        ( 0,  0, -1, [( hx,-hy,-hz),(-hx,-hy,-hz),(-hx, hy,-hz),( hx, hy,-hz)]),  # -Z 뒤쪽 면
+        ( 1,  0,  0, [( hx,-hy, hz),( hx,-hy,-hz),( hx, hy,-hz),( hx, hy, hz)]),  # +X 오른쪽 면
+        (-1,  0,  0, [(-hx,-hy,-hz),(-hx,-hy, hz),(-hx, hy, hz),(-hx, hy,-hz)]),  # -X 왼쪽 면
     ]
 
     positions = []
@@ -94,13 +94,13 @@ def build_glb(objects):
             obj['sx'], obj['sy'], obj['sz'],
             obj['color'])
 
-        bv_pos = add_buffer_view(pos_b, 34962)  # ARRAY_BUFFER
+        bv_pos = add_buffer_view(pos_b, 34962)  # GLTF ARRAY_BUFFER 대상
         bv_nrm = add_buffer_view(nrm_b, 34962)
-        bv_idx = add_buffer_view(idx_b, 34963)  # ELEMENT_ARRAY_BUFFER
+        bv_idx = add_buffer_view(idx_b, 34963)  # GLTF ELEMENT_ARRAY_BUFFER 대상
 
-        acc_pos = add_accessor(bv_pos, vc, 5126, "VEC3", bmin, bmax)  # FLOAT
+        acc_pos = add_accessor(bv_pos, vc, 5126, "VEC3", bmin, bmax)  # GLTF FLOAT 컴포넌트
         acc_nrm = add_accessor(bv_nrm, vc, 5126, "VEC3")
-        acc_idx = add_accessor(bv_idx, ic, 5123, "SCALAR")            # UNSIGNED_SHORT
+        acc_idx = add_accessor(bv_idx, ic, 5123, "SCALAR")  # GLTF UNSIGNED_SHORT 컴포넌트
 
         mat_idx = len(materials)
         r, g, b = obj['color']
@@ -139,22 +139,22 @@ def build_glb(objects):
     }
 
     json_bytes = json.dumps(gltf, separators=(',', ':')).encode('utf-8')
-    # JSON chunk must be padded to 4-byte boundary with spaces (0x20)
+    # JSON 청크는 공백(0x20)으로 4바이트 경계에 맞춘다.
     json_pad = (align4(len(json_bytes)) - len(json_bytes))
     json_chunk = json_bytes + b' ' * json_pad
 
-    # BIN chunk padding with zeros
+    # BIN 청크는 0으로 패딩해 4바이트 경계에 맞춘다.
     bin_pad  = (align4(len(buffers_bin)) - len(buffers_bin))
     bin_chunk = buffers_bin + b'\x00' * bin_pad
 
     total_len = 12 + 8 + len(json_chunk) + 8 + len(bin_chunk)
-    glb  = struct.pack('<III', 0x46546C67, 2, total_len)  # header: magic, version, length
-    glb += struct.pack('<II', len(json_chunk), 0x4E4F534A) + json_chunk  # JSON chunk
-    glb += struct.pack('<II', len(bin_chunk),  0x004E4942) + bin_chunk   # BIN chunk
+    glb  = struct.pack('<III', 0x46546C67, 2, total_len)  # GLB 헤더: magic, version, length
+    glb += struct.pack('<II', len(json_chunk), 0x4E4F534A) + json_chunk  # JSON 청크 헤더와 본문
+    glb += struct.pack('<II', len(bin_chunk),  0x004E4942) + bin_chunk  # BIN 청크 헤더와 본문
     return glb
 
 
-# ── 씬 정의: 건물 격자 + 도로 ──────────────────────────────────────────────────
+# 씬 정의: 건물 격자 + 도로
 objects = []
 
 # 5×5 격자로 건물 배치 (높이 랜덤화)

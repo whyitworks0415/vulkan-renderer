@@ -6,7 +6,7 @@ new_code = r"""void VulkanApp::buildScene() {
         throw std::runtime_error("Failed to load scene: " + currentMapFile);
     }
 
-    // Load meshes
+    // 메시 로드
     std::vector<std::pair<std::string, MeshRange>> meshRanges;
     auto findMesh = [&](const std::string& id) -> const MeshRange* {
         for (auto& p : meshRanges) if (p.first == id) return &p.second;
@@ -23,7 +23,7 @@ new_code = r"""void VulkanApp::buildScene() {
         meshRanges.push_back({md.id, mr});
     }
 
-    // Floor
+    // 바닥
     if (desc.hasFloor) {
         auto obj = addFloor(vertices, indices, desc.floor.size, desc.floor.divs);
         obj.push.model            = glm::mat4(1.f);
@@ -37,7 +37,7 @@ new_code = r"""void VulkanApp::buildScene() {
         drawObjects.push_back(obj);
     }
 
-    // Grid patterns
+    // 그리드 배치
     for (auto& gd : desc.grids) {
         const MeshRange* mr = findMesh(gd.meshId);
         const MeshDesc*  md = findMeshDesc(gd.meshId);
@@ -76,7 +76,7 @@ new_code = r"""void VulkanApp::buildScene() {
         std::cout << "  Grid '" << gd.meshId << "': " << count << " objects\n";
     }
 
-    // Individual objects
+    // 개별 오브젝트
     for (auto& od : desc.objects) {
         const MeshRange* mr = findMesh(od.meshId);
         const MeshDesc*  md = findMeshDesc(od.meshId);
@@ -95,14 +95,14 @@ new_code = r"""void VulkanApp::buildScene() {
         drawObjects.push_back(obj);
     }
 
-    // OCC proxy unit box
+    // 오클루전 쿼리용 단위 박스 프록시
     occBBoxMesh = addBox(vertices, indices, 1.f, 1.f, 1.f, {0.f, 0.f, 0.f});
 
-    // OCC state
+    // 오클루전 상태 초기화
     occResults.assign(drawObjects.size(), 1u);
     occQueryBuf.resize(drawObjects.size() * 2, 0);
 
-    // Camera from scene file
+    // 씬 파일의 카메라 설정 적용
     camera.position = desc.cameraPos;
     camera.yaw      = desc.cameraYaw;
     camera.pitch    = desc.cameraPitch;
@@ -116,7 +116,7 @@ new_code = r"""void VulkanApp::buildScene() {
 void VulkanApp::reloadScene() {
     vkDeviceWaitIdle(device);
 
-    // Destroy GPU geometry buffers
+    // GPU 지오메트리 버퍼 해제
     vkDestroyBuffer(device, indexBuffer,  nullptr);
     vkFreeMemory(device, indexBufferMemory,  nullptr);
     vkDestroyBuffer(device, vertexBuffer, nullptr);
@@ -126,7 +126,7 @@ void VulkanApp::reloadScene() {
     vertexBuffer       = VK_NULL_HANDLE;
     vertexBufferMemory = VK_NULL_HANDLE;
 
-    // Destroy query pool
+    // 쿼리 풀 해제
     if (occlusionQueryPool != VK_NULL_HANDLE) {
         vkDestroyQueryPool(device, occlusionQueryPool, nullptr);
         occlusionQueryPool = VK_NULL_HANDLE;
@@ -134,13 +134,13 @@ void VulkanApp::reloadScene() {
     }
     occWarmupFrames = 0;
 
-    // Clear CPU scene data
+    // CPU 씬 데이터 비우기
     vertices.clear();
     indices.clear();
     drawObjects.clear();
     occBBoxMesh = {};
 
-    // Rebuild
+    // 씬 재구성
     buildScene();
     createVertexBuffer();
     createIndexBuffer();

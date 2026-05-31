@@ -2,8 +2,8 @@
 #include <tiny_obj_loader.h>
 
 #include "OBJLoader.h"
-#include "GLTFLoader.h"   // GLTFSceneDesc, GLTFTextureData
-#include "VulkanApp.h"    // Vertex, DrawObject, PushConstants
+#include "GLTFLoader.h" // 사용하는 GLTF 씬/텍스처 타입
+#include "VulkanApp.h" // 사용하는 렌더링 타입: Vertex, DrawObject, PushConstants
 
 // stb_image 구현체는 stb_image_impl.cpp 에서 정의됨 — 여기서는 선언만 사용
 #include <stb_image.h>
@@ -12,6 +12,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -20,9 +21,7 @@
 #include <unordered_map>
 #include <vector>
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  헬퍼: 로컬 공간 AABB → 바운딩 구 (GLTFLoader 와 동일 알고리즘)
-// ─────────────────────────────────────────────────────────────────────────────
+// 헬퍼: 로컬 공간 AABB -> 바운딩 구 (GLTFLoader 와 동일 알고리즘)
 static void computeBound(DrawObject&      obj,
                          const glm::vec3& bmin,
                          const glm::vec3& bmax)
@@ -46,10 +45,8 @@ static void computeBound(DrawObject&      obj,
     obj.boundRadius = radius;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  헬퍼: stb_image 로 텍스처 파일 → GLTFTextureData
-//  이미 로드된 경로는 texPathToIndex 맵에서 재사용한다.
-// ─────────────────────────────────────────────────────────────────────────────
+// 헬퍼: stb_image 로 텍스처 파일 -> GLTFTextureData
+// 이미 로드된 경로는 texPathToIndex 맵에서 재사용한다.
 static int loadTexture(const std::string& absPath,
                        std::vector<GLTFTextureData>&           textures,
                        std::unordered_map<std::string, int>&   texPathToIndex)
@@ -76,9 +73,7 @@ static int loadTexture(const std::string& absPath,
     return idx;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  loadOBJScene
-// ─────────────────────────────────────────────────────────────────────────────
+// loadOBJScene
 bool loadOBJScene(const std::string&           path,
                   std::vector<Vertex>&          verts,
                   std::vector<uint32_t>&        inds,
@@ -86,8 +81,25 @@ bool loadOBJScene(const std::string&           path,
                   GLTFSceneDesc&                sceneDesc,
                   std::vector<GLTFTextureData>& textures)
 {
+    namespace fs = std::filesystem;
+    fs::path objPath(path);
+    fs::path mapDir = objPath.parent_path();
+    fs::path assetRoot = mapDir;
+    std::string mapDirName = mapDir.filename().string();
+    std::transform(mapDirName.begin(), mapDirName.end(), mapDirName.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (mapDirName == "map")
+        assetRoot = mapDir.parent_path();
+
     tinyobj::ObjReaderConfig cfg;
-    cfg.mtl_search_path = std::filesystem::path(path).parent_path().string();
+    cfg.mtl_search_path = mapDir.string();
+    for (const fs::path& dir : {assetRoot / "mtl", assetRoot / "MTL"}) {
+        std::error_code ec;
+        if (fs::exists(dir, ec)) {
+            cfg.mtl_search_path = dir.string();
+            break;
+        }
+    }
     cfg.triangulate     = true;
 
     tinyobj::ObjReader reader;
@@ -118,6 +130,29 @@ bool loadOBJScene(const std::string&           path,
     if (!baseDir.empty() && baseDir.back() != '/' && baseDir.back() != '\\')
         baseDir += '/';
 
+    auto resolveTexturePath = [&](const std::string& texName) {
+        fs::path texPath(texName);
+        if (texPath.is_absolute())
+            return texPath.string();
+
+        std::vector<fs::path> textureDirs = {
+            mapDir,
+            mapDir / "Textures",
+            mapDir / "textures",
+            mapDir / "texture",
+            assetRoot / "texture",
+            assetRoot / "textures",
+            assetRoot / "Textures",
+        };
+        std::error_code ec;
+        for (const fs::path& dir : textureDirs) {
+            fs::path candidate = dir / texName;
+            if (fs::exists(candidate, ec))
+                return candidate.string();
+        }
+        return (mapDir / texName).string();
+    };
+
     // 재질별 텍스처 인덱스 미리 로드
     std::vector<int> matTexIdx(materials.size(), -1);
     for (int mi = 0; mi < (int)materials.size(); ++mi) {
@@ -126,20 +161,20 @@ bool loadOBJScene(const std::string&           path,
             std::string texPath = mat.diffuse_texname;
             // 절대 경로가 아닌 경우 .obj 파일 기준 상대 경로로 처리
             if (!std::filesystem::path(texPath).is_absolute())
-                texPath = baseDir + texPath;
+                texPath = resolveTexturePath(texPath);
             int localIdx = loadTexture(texPath, textures, texPathToIndex);
             matTexIdx[mi] = (localIdx >= 0) ? (localIdx) : -1;
         }
     }
 
-    // ── shape(=오브젝트) 별로 DrawObject 생성 ─────────────────────────────────
+    // shape(=오브젝트) 별로 DrawObject 생성
     // 같은 재질 내에서도 face마다 다른 재질을 쓸 수 있으므로,
     // 재질별로 face를 묶어 같은 shape 내에서도 DrawObject를 분리한다.
     // (대부분의 .obj는 shape당 재질 1개이므로 결과적으로 shape = DrawObject)
 
     for (const auto& shape : shapes) {
         // shape 내 face들을 재질 ID 기준으로 그룹화
-        std::unordered_map<int, std::vector<int>> matToFaces; // matId → face 인덱스 목록
+        std::unordered_map<int, std::vector<int>> matToFaces; // matId -> face 인덱스 목록
         for (int fi = 0; fi < (int)shape.mesh.material_ids.size(); ++fi) {
             int mid = shape.mesh.material_ids[fi];
             if (mid < 0) mid = -1; // 재질 없음
@@ -227,7 +262,7 @@ bool loadOBJScene(const std::string&           path,
 
             if (localVerts.empty()) continue;
 
-            // 법선이 없는 face → 플랫 법선 계산
+            // 법선이 없는 face -> 플랫 법선 계산
             for (size_t i = 0; i + 2 < localInds.size(); i += 3) {
                 Vertex& a = localVerts[localInds[i]];
                 Vertex& b = localVerts[localInds[i + 1]];

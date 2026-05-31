@@ -1,7 +1,7 @@
 @echo off
-REM Compile GLSL shaders to SPIR-V
-REM Requires glslc (from Vulkan SDK) to be on PATH
-REM Run this script from the project root before building.
+REM GLSL 셰이더를 SPIR-V 바이너리로 컴파일한다.
+REM Vulkan SDK의 glslc가 PATH에 있어야 한다.
+REM 빌드 전에 프로젝트 루트에서 실행한다.
 
 if not exist "shaders\spv" mkdir "shaders\spv"
 
@@ -16,6 +16,10 @@ if errorlevel 1 ( echo FAILED: scene.frag & exit /b 1 )
 echo Compiling scene_instanced.vert ...
 glslc shaders/scene_instanced.vert -o shaders/spv/scene_instanced.vert.spv
 if errorlevel 1 ( echo FAILED: scene_instanced.vert & exit /b 1 )
+
+echo Compiling shadow.vert ...
+glslc shaders/shadow.vert -o shaders/spv/shadow.vert.spv
+if errorlevel 1 ( echo FAILED: shadow.vert & exit /b 1 )
 
 echo Compiling gizmo.vert ...
 glslc shaders/gizmo.vert -o shaders/spv/gizmo.vert.spv

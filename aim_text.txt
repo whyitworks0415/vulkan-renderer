@@ -34,3 +34,102 @@ SSAAMSAAFXAATAA처리 방식고해상도 렌더링 후 축소경계선 픽셀만
 ===== PAGE 9 =====
 8
 Deferred Rendering광원이 4개 이하인 씬에서는 G-Buffer 생성 비용으로 인해 Forward보다 오히려 느리고, 광원이 16개 이상인 씬에서는 Deferred가 확연히 우세할 것임.Deferred의 핵심 이점은 광원 수에 비례한 연산량 증가를 억제하는 것이므로, 임계 광원 수 이상에서만 효과가 나타난다.Mipmapping고해상도 텍스처를 사용하는 씬일수록 GPU 캐시 적중률이 높아져 Frame Time 감소 효과가 클 것임.Mipmapping은 텍스처 앨리어싱 감소뿐 아니라 캐시 효율 향상 효과가 있으므로, 텍스처 해상도가 높고 원거리 오브젝트가 많은 씬에서 효과가 극대화될 것이다.Early-Z Rejection오브젝트 겹침이 많은 씬에서 Front-to-Back 정렬과 함께 적용할 경우 프래그먼트 셰이더 실행 횟수가 줄어들지만, 오브젝트 수가 매우 많을 때는 정렬 오버헤드가 발생할 것임.UBO 최적화드로우 콜이 많은 씬에서 평균 FPS보다 Frame Time 편차(지터)가 줄어드는 효과가 두드러질 것임.UBO 최적화는 평균 FPS보다 프레임 타임 안정성(편차)에 더 큰 영향을 줄 것으로 예상된다.기법주요 효과 예상 지표효과가 큰 조건Frustum CullingCPU 드로우 콜 수 감소오브젝트 많고 시야각 좁을 때Occlusion CullingGPU 렌더링 오브젝트 수 감소밀폐된 씬, 오브젝트 밀집LOD버텍스 셰이더 연산량 감소원거리 오브젝트 다수Instanced Rendering드로우 콜 수 1/N 감소동일 메시 반복 100개 이상Deferred Rendering광원 처리 시간 감소광원 16개 이상Mipmapping텍스처 샘플링 시간 단축고해상도 텍스처, 원거리 씬Early-Z RejectionFragment 연산 횟수 감소오브젝트 겹침 많은 씬UBO 최적화Frame Time 편차 감소드로우 콜 많은 씬
+
+===== 추가 점검 메모: 현재 구현 대조 및 레전드 확장 포인트 =====
+작성 기준: 2026.05.01 현재 코드/README 기준
+
+0. 현재 구현된 핵심 성과 요약
+- 원래 계획서에는 C# + Silk.NET/Vulkan.NET 기반으로 적혀 있으나, 현재 실제 구현은 C++17 + Vulkan SDK 기반 자체 렌더러이다. 연구 보고서에서는 이를 "구현 언어와 바인딩 변경"으로 명확히 적는 것이 좋다. C# 대신 C++을 사용한 것은 오히려 Vulkan의 저수준 구조를 더 직접적으로 다룰 수 있다는 장점이 있다.
+- Vulkan 기본 구조는 상당 부분 구현되어 있다. VkInstance, 물리/논리 디바이스 선택, Swapchain, Render Pass, Framebuffer, Command Buffer, Fence/Semaphore 동기화, Validation Layer, 셰이더 모듈, 파이프라인 생성 흐름이 실제 코드에 포함되어 있다.
+- GLB/GLTF/OBJ/STL 및 .scene 기반 맵 로딩, 텍스처 업로드, 카메라 이동/회전, 맵 전환, 전체화면, Ghost 관찰자 모드가 구현되어 있다.
+- 최적화 토글은 계획보다 실험용으로 더 세분화되어 있다. 현재 토글 가능한 항목은 Frustum Culling, LOD, GPU Instancing, Backface Culling, Front-to-Back Depth Sort, Occlusion Culling, View Distance Culling, Small Object Culling, Deferred Shading이다.
+- 성능 측정도 단순 FPS 표시를 넘어서 ImGui 오버레이, FPS/Frame Time/CPU/RAM/GPU/Draw Call 표시, 카메라 리플레이, 5초 수동 벤치마크, 자동 벤치마크(10개 실험 x 5회), CSV 저장까지 구현되어 있다. 이 부분은 과제연구의 정량 실험 설계 측면에서 큰 강점이다.
+
+1. 계획서에는 있으나 현재 구현이 부족하거나 빠진 부분
+1) PBR 셰이딩
+현재 GLTF의 metallic/roughness 값을 읽기는 하지만, 셰이더는 Cook-Torrance BRDF 기반 PBR이 아니라 Blinn-Phong 조명 모델을 사용한다. metallic/roughness는 shininess/specularStrength로 변환되어 근사적으로 쓰이는 상태이므로, 보고서에서는 "PBR 완전 구현"이 아니라 "GLTF PBR 파라미터를 Blinn-Phong 계수로 매핑"했다고 표현하는 것이 정확하다.
+
+2) Shadow Mapping + PCF
+계획서에는 Shadow Mapping과 PCF가 핵심 렌더링 기능으로 적혀 있지만, 현재 코드에는 광원 시점 depth pass, shadow map texture, light-space matrix, shadow compare 샘플링이 구현되어 있지 않다. 그림자 효과를 연구 항목으로 유지하려면 별도 shadow render pass와 shadow sampler를 추가해야 한다.
+
+3) Cube Map / Environment Mapping / IBL
+계획서에는 큐브맵 반사와 IBL 확장이 들어가 있지만, 현재 코드에는 samplerCube, cubemap 이미지 로딩, prefiltered environment map, irradiance map, BRDF LUT 등이 없다. 현재는 Fresnel 느낌의 하늘색 반사 근사만 있으므로, 실제 환경 반사라고 보기에는 부족하다.
+
+4) 반투명 유리의 투과 표현
+알파 블렌딩용 파이프라인은 구현되어 있으나, 굴절/refraction, 두께 기반 투과, 배경 샘플링, 물체 내부 흡수 같은 유리 표현은 아직 없다. 보고서에서는 "알파 블렌딩 기반 반투명 렌더링"으로 쓰는 편이 정확하다.
+
+5) Anti-Aliasing
+계획서에는 MSAA 또는 FXAA 비교가 들어가지만, 현재 Vulkan 파이프라인의 rasterizationSamples는 VK_SAMPLE_COUNT_1_BIT로 되어 있어 MSAA는 적용되지 않았다. FXAA/TAA 후처리 셰이더도 아직 없다. Deferred Rendering과 호환성을 고려하면, 구현 난이도 대비 효과가 좋은 FXAA가 가장 현실적인 추가 후보이다.
+
+6) Mipmapping
+텍스처 sampler에는 mipmapMode가 설정되어 있지만, 실제 이미지 생성 시 mipLevels가 1로 되어 있어 mipmap 체인이 생성되지 않는다. 따라서 현재 상태에서는 "Mipmapping 적용 전/후 성능 비교" 가설을 실험하기 어렵다. 이 항목을 연구에 유지하려면 mip level 생성, 이미지 blit, sampler LOD 설정, 토글 비교가 필요하다.
+
+7) Vulkan Timestamp Query  
+계획서에는 Vulkan Timestamp Query를 활용한다고 되어 있으나, 현재 성능 측정은 FPS/CPU/GPU/RAM/Draw Call 중심이다. GPU 시간 자체를 렌더패스별로 분해하려면 timestamp query pool을 추가해 Geometry Pass, Lighting Pass, UI Pass 시간을 따로 기록하는 것이 필요하다.
+
+8) Unity 엔진과의 직접 비교
+계획서에는 Unity와 동일 씬을 만들어 비교한다고 되어 있지만, 현재 프로젝트 컨텍스트상 Unity 비교는 범위 밖으로 정리되어 있다. 최종 보고서에서 Unity 비교를 계속 주장하려면 Unity 씬 재현과 측정 조건 통제가 필요하고, 그렇지 않다면 연구 질문을 "자체 Vulkan 렌더러 내부 최적화 기법 비교"로 좁히는 것이 더 설득력 있다.
+
+9) 다수 광원 실험 규모
+Deferred Rendering 가설은 "광원 16개 이상"을 언급하지만, 현재 GPU 조명 UBO의 MAX_SCENE_LIGHTS는 8이다. Deferred의 장점을 강하게 보이려면 최대 조명 수를 늘리거나, 1/2/4/8개 기준으로 가설을 수정해야 한다.
+
+10) 파티클 시스템
+계획서에는 연기·불꽃 파티클이 여유 과제로 적혀 있으나 현재 구현되어 있지 않다. 핵심 연구에는 필수는 아니지만, 시각적 완성도를 높이는 확장 요소로 남겨둘 수 있다.
+
+11) 저부하/중부하/고부하 테스트 케이스의 명시적 분리
+현재 stress multiplier와 여러 맵은 존재하지만, 보고서용 실험 설계에서는 Low/Medium/High 조건을 오브젝트 수, 광원 수, 카메라 경로, 해상도, 반복 횟수로 명확히 정의해야 한다. 구현보다 문서화가 더 필요한 부분이다.
+
+12) UBO 최적화의 독립 실험
+현재 UBO와 push constant는 사용되고 있지만, "UBO 최적화 ON/OFF"처럼 독립적으로 비교 가능한 실험 조건은 부족하다. UBO 최적화 가설을 유지하려면 기존 방식 대비 UBO 패킹/영구 매핑/업데이트 횟수 감소를 비교할 수 있는 기준 구현이 필요하다.
+
+2. 추가하면 과제연구가 훨씬 강해지는 포인트
+1) GPU 패스별 시간 측정 추가
+가장 추천하는 확장이다. Vulkan Timestamp Query를 추가해 Forward Pass, G-Buffer Geometry Pass, Deferred Lighting Pass, Transparent Pass, ImGui Pass 시간을 각각 측정하면 단순 FPS 비교보다 연구 수준이 확 올라간다. "왜 빨라졌는가"를 수치로 설명할 수 있기 때문이다.
+
+2) 자동 실험 매트릭스 강화
+현재 자동 벤치마크는 이미 강점이므로, 이를 더 연구답게 만들기 위해 맵 x 스트레스 배율 x 최적화 기법 x 반복 횟수 조합을 자동 실행하도록 확장하면 좋다. 결과 CSV에 평균, 표준편차, 최소/최대 frame time, 1% low FPS를 함께 저장하면 보고서 그래프의 설득력이 커진다.
+
+3) 1% Low FPS와 Frame Time 분산 분석
+평균 FPS만 보면 최적화 효과가 과장되거나 감춰질 수 있다. 1% low FPS, frame time 표준편차, p95/p99 frame time을 추가하면 "체감 성능"과 "프레임 안정성"까지 분석할 수 있다. 특히 UBO 최적화와 Occlusion Query의 지터 문제를 설명하기 좋다.
+
+4) RenderDoc 캡처 이미지 첨부
+G-Buffer의 albedo/normal/position attachment, draw call 감소 화면, occlusion query용 bounding box pass 등을 RenderDoc 캡처로 넣으면 보고서가 시각적으로 훨씬 전문적으로 보인다. 단순 스크린샷보다 "렌더링 파이프라인을 실제로 분석했다"는 근거가 된다.
+
+5) Deferred vs Forward 광원 수 실험
+Deferred Shading이 구현되어 있으므로 가장 좋은 메인 실험 후보이다. 광원 수를 1, 2, 4, 8로 늘리며 Forward와 Deferred의 frame time을 비교하면, G-Buffer 오버헤드와 다광원 이점을 모두 설명할 수 있다. MAX_SCENE_LIGHTS를 16 또는 32로 늘리면 계획서의 가설과도 더 잘 맞는다.
+
+6) FXAA 후처리 추가
+MSAA는 Deferred와 엮이면 복잡해지므로, 화면 최종 결과에 적용하는 FXAA를 먼저 추가하는 것이 현실적이다. 적용 전/후 스크린샷과 frame time 차이를 비교하면 시각 품질과 성능의 trade-off를 깔끔하게 보여줄 수 있다.
+
+7) 실제 mipmap 생성 추가
+SanFrancisco 텍스처처럼 큰 이미지가 있는 프로젝트이므로 mipmap 실험이 잘 어울린다. mipmap OFF/ON을 비교하면 원거리 텍스처 품질, shimmering 감소, GPU 캐시 효율을 하나의 실험으로 연결할 수 있다. 구현 후에는 원거리 카메라 경로를 리플레이로 고정해 비교하면 좋다.
+
+8) Shadow Mapping은 선택적으로 1개 Directional Light만 구현
+모든 광원 그림자를 구현하려고 하면 범위가 커진다. 과제연구용으로는 directional light 1개에 대해 depth map + PCF만 구현해도 충분히 "그림자 렌더링 파이프라인"을 설명할 수 있다. 성능 실험은 shadow map 해상도(1024/2048/4096)에 따른 frame time 비교로 잡으면 좋다.
+
+9) 연구 범위 재정의 문단 추가
+계획서의 원래 목표가 넓기 때문에, 최종 보고서에는 "Unity 비교와 완전한 PBR/IBL은 범위에서 제외하고, Vulkan 렌더러 내부 최적화 기법의 정량 비교에 집중했다"는 문단을 넣는 것이 좋다. 오히려 범위를 명확히 줄이면 완성도가 높아 보인다.
+
+10) 결과 그래프 자동 생성
+CSV가 이미 저장되므로 Python으로 자동 그래프를 생성하면 발표 자료가 매우 강해진다. 추천 그래프는 (1) 최적화별 평균 FPS, (2) 평균 frame time, (3) 1% low FPS, (4) draw call 수, (5) CPU/GPU 사용률, (6) 스트레스 배율별 성능 변화이다.
+
+3. 최종 보고서에서 추천하는 연구 방향 수정안
+기존 연구 질문:
+- Vulkan과 C# 기반 자체 3차원 그래픽 렌더러 구현 및 Unity 엔진과의 프레임 성능·최적화 기법 비교 연구
+
+수정 추천 연구 질문:
+- C++/Vulkan 기반 자체 3차원 렌더러에서 실시간 렌더링 최적화 기법이 프레임 성능과 프레임 안정성에 미치는 영향 분석
+
+수정 이유:
+- 실제 구현이 C++ 기반이므로 계획과 결과가 일치한다.
+- Unity 비교를 빼도 연구의 핵심인 Vulkan 최적화 실험은 충분히 강하다.
+- 현재 이미 구현된 리플레이/자동 벤치마크/CSV 저장 기능을 활용하면, 단순 구현 과제가 아니라 정량 실험형 과제연구로 보일 수 있다.
+
+4. 우선순위 추천
+1순위: Vulkan Timestamp Query + 1% low FPS/표준편차 계산
+2순위: Deferred vs Forward 광원 수 실험 강화(MAX_SCENE_LIGHTS 확장 포함)
+3순위: FXAA 또는 Mipmapping 중 하나를 추가해 화질-성능 trade-off 실험 만들기
+4순위: RenderDoc 캡처와 G-Buffer 시각 자료 확보
+5순위: 시간이 남으면 Shadow Mapping 1개 광원만 구현
+
+이 우선순위대로 진행하면 새 기능을 무리하게 많이 넣기보다, 이미 구현된 렌더러를 "측정 가능한 연구 도구"로 완성하는 방향이 된다. 과제연구 평가에서는 화려한 기능 개수보다 가설-실험-데이터-분석의 연결이 더 중요하므로, 현재 프로젝트에는 벤치마크 자동화와 결과 분석을 강화하는 것이 가장 레전드 포인트가 될 가능성이 높다.

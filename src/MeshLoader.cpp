@@ -1,5 +1,5 @@
 #include "MeshLoader.h"
-#include "VulkanApp.h"   // Vertex 구조체 정의
+#include "VulkanApp.h" // Vertex 구조체 정의
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <fstream>
@@ -12,21 +12,15 @@
 #include <unordered_map>
 #include <iostream>
 
-// ═════════════════════════════════════════════════════════════════════════════
-//  STL 로더
-// ═════════════════════════════════════════════════════════════════════════════
+// STL 로더
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  loadBinary  –  바이너리 STL 파싱
-//
-//  바이너리 STL 포맷:
-//    80 바이트 헤더 (무시)
-//    4 바이트 삼각형 수
-//    삼각형 수 × 50 바이트:
-//      [법선 f32×3][v0 f32×3][v1 f32×3][v2 f32×3][속성 u16]
-//
-//  법선이 (0,0,0) 이면 외적으로 재계산한다.
-// ─────────────────────────────────────────────────────────────────────────────
+// loadBinary  –  바이너리 STL 파싱
+// 바이너리 STL 포맷:
+// 80 바이트 헤더 (무시)
+// 4 바이트 삼각형 수
+// 삼각형 수 × 50 바이트:
+// [법선 f32×3][v0 f32×3][v1 f32×3][v2 f32×3][속성 u16]
+// 법선이 (0,0,0) 이면 외적으로 재계산한다.
 static MeshRange loadBinary(std::ifstream& f,
                             std::vector<Vertex>& verts,
                             std::vector<uint32_t>& inds,
@@ -80,22 +74,18 @@ static MeshRange loadBinary(std::ifstream& f,
     return r;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  loadAscii  –  ASCII STL 파싱
-//
-//  ASCII STL 포맷 (텍스트):
-//    solid <name>
-//      facet normal nx ny nz
-//        outer loop
-//          vertex x y z
-//          vertex x y z
-//          vertex x y z
-//        endloop
-//      endfacet
-//    endsolid
-//
-//  파일 전체를 한 번에 읽어 istringstream 으로 토큰 파싱한다.
-// ─────────────────────────────────────────────────────────────────────────────
+// loadAscii  –  ASCII STL 파싱
+// ASCII STL 포맷 (텍스트):
+// solid <name>
+// facet normal nx ny nz
+// outer loop
+// vertex x y z
+// vertex x y z
+// vertex x y z
+// endloop
+// endfacet
+// endsolid
+// 파일 전체를 한 번에 읽어 istringstream 으로 토큰 파싱한다.
 static MeshRange loadAscii(std::ifstream& f,
                            std::vector<Vertex>& verts,
                            std::vector<uint32_t>& inds,
@@ -162,14 +152,11 @@ static LoadedMesh makeSinglePartMesh(const MeshRange& whole) {
     return out;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  loadSTLDetailed  –  바이너리/ASCII 자동 감지 후 파싱, whole+parts 반환
-//
-//  감지 방법:
-//    1. 헤더 5바이트가 "solid" 이면 ASCII 후보
-//    2. 단, 일부 바이너리 STL 도 "solid" 로 시작하므로
-//       파일 크기와 (80 + 4 + n×50) 기대값 비교로 최종 판별
-// ─────────────────────────────────────────────────────────────────────────────
+// loadSTLDetailed  –  바이너리/ASCII 자동 감지 후 파싱, whole+parts 반환
+// 감지 방법:
+// 1. 헤더 5바이트가 "solid" 이면 ASCII 후보
+// 2. 단, 일부 바이너리 STL 도 "solid" 로 시작하므로
+// 파일 크기와 (80 + 4 + n×50) 기대값 비교로 최종 판별
 LoadedMesh loadSTLDetailed(const std::string& path,
                            std::vector<Vertex>& verts,
                            std::vector<uint32_t>& inds,
@@ -212,29 +199,25 @@ MeshRange loadSTL(const std::string& path,
     return loadSTLDetailed(path, verts, inds, color).whole;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-//  모델 행렬 빌더
-// ═════════════════════════════════════════════════════════════════════════════
-//
-//  STL/SketchUp OBJ 는 Z-up 좌표계를 사용하고, 씬은 Y-up 을 사용한다.
-//  변환 체인 (우→좌 순서로 곱함):
-//    R: X축 -90° 회전 → (X, Y_stl, Z_stl) → (X, Z_stl, -Y_stl)
-//       즉, 씬의 Y(높이) = STL 의 Z, 씬의 Z(깊이) = -STL 의 Y
-//    S: 균일 스케일
-//    T: XZ 중심 정렬 + 바닥을 worldPos.y 에 맞춤 + worldPos 로 이동
-//
+// 메시 모델 행렬 생성
+// STL/SketchUp OBJ 는 Z-up 좌표계를 사용하고, 씬은 Y-up 을 사용한다.
+// 변환 체인 (우→좌 순서로 곱함):
+// R: X축 -90° 회전 -> (X, Y_stl, Z_stl) -> (X, Z_stl, -Y_stl)
+// 즉, 씬의 Y(높이) = STL 의 Z, 씬의 Z(깊이) = -STL 의 Y
+// S: 균일 스케일
+// T: XZ 중심 정렬 + 바닥을 worldPos.y 에 맞춤 + worldPos 로 이동
 glm::mat4 makeSTLModel(const MeshRange& mesh, float scale, glm::vec3 worldPos)
 {
-    // R: Z-up → Y-up (X축 -90° 회전)
+    // R: Z-up -> Y-up (X축 -90° 회전)
     glm::mat4 R = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(1, 0, 0));
 
     // S: 균일 스케일
     glm::mat4 S = glm::scale(glm::mat4(1.0f), glm::vec3(scale));
 
     // R·S 이후 씬 공간의 AABB:
-    //   씬 X: [bboxMin.x * scale, bboxMax.x * scale]
-    //   씬 Y: [bboxMin.z * scale, bboxMax.z * scale]  (Z → Y)
-    //   씬 Z: [-bboxMax.y * scale, -bboxMin.y * scale] (Y → -Z)
+    // 씬 X: [bboxMin.x * scale, bboxMax.x * scale]
+    // 씬 Y: [bboxMin.z * scale, bboxMax.z * scale]  (Z -> Y)
+    // 씬 Z: [-bboxMax.y * scale, -bboxMin.y * scale] (Y -> -Z)
     float xCenter = (mesh.bboxMin.x + mesh.bboxMax.x) * 0.5f * scale; // XZ 수평 중심
     float yBottom =  mesh.bboxMin.z * scale; // 메시 바닥 (STL_Z 최솟값 = 씬_Y 최솟값)
     float zCenter = -(mesh.bboxMin.y + mesh.bboxMax.y) * 0.5f * scale; // 깊이 중심
@@ -244,20 +227,16 @@ glm::mat4 makeSTLModel(const MeshRange& mesh, float scale, glm::vec3 worldPos)
 
     glm::mat4 T = glm::translate(glm::mat4(1.0f), worldPos + alignOffset);
 
-    // 최종: model = T * S * R  (버텍스에는 오른쪽부터 적용: R → S → T)
+    // 최종: model = T * S * R  (버텍스에는 오른쪽부터 적용: R -> S -> T)
     return T * S * R;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-//  OBJ 로더
-// ═════════════════════════════════════════════════════════════════════════════
+// OBJ 로더
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  parseFaceToken  –  OBJ 면 토큰 파싱
-//  OBJ 면 토큰 형식: "v" | "v/vt" | "v//vn" | "v/vt/vn"
-//  포지션 인덱스(1-based)를 반환하고 법선 인덱스를 outNrmIdx 에 채움
-//  음수 인덱스(상대 참조) 는 호출자가 처리
-// ─────────────────────────────────────────────────────────────────────────────
+// parseFaceToken  –  OBJ 면 토큰 파싱
+// OBJ 면 토큰 형식: "v" | "v/vt" | "v//vn" | "v/vt/vn"
+// 포지션 인덱스(1-based)를 반환하고 법선 인덱스를 outNrmIdx 에 채움
+// 음수 인덱스(상대 참조) 는 호출자가 처리
 static int parseFaceToken(const std::string& tok, int* outNrmIdx) {
     int vi = 0, vni = 0;
     auto s1 = tok.find('/');
@@ -275,10 +254,8 @@ static int parseFaceToken(const std::string& tok, int* outNrmIdx) {
     return vi;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  parseMTL  –  .mtl 파일에서 재질 이름 → Kd(색상) 맵 구성
-//  colorOverride >= 0 이면 호출되지 않음 (외부 색이 우선)
-// ─────────────────────────────────────────────────────────────────────────────
+// parseMTL  –  .mtl 파일에서 재질 이름 -> Kd(색상) 맵 구성
+// colorOverride >= 0 이면 호출되지 않음 (외부 색이 우선)
 static std::unordered_map<std::string, glm::vec3>
 parseMTL(const std::string& dir, const std::string& mtlFilename) {
     std::unordered_map<std::string, glm::vec3> mats;
@@ -286,7 +263,7 @@ parseMTL(const std::string& dir, const std::string& mtlFilename) {
     std::ifstream f(path);
     if (!f.is_open()) return mats; // .mtl 없으면 빈 맵 반환 (색상 없음으로 처리)
 
-    std::string cur;  // 현재 처리 중인 재질 이름
+    std::string cur; // 현재 처리 중인 재질 이름
     std::string line;
     while (std::getline(f, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -304,19 +281,15 @@ parseMTL(const std::string& dir, const std::string& mtlFilename) {
     return mats;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  loadOBJDetailed  –  OBJ 파싱 + 공간 청크 분할, whole+parts 반환
-//
-//  처리 흐름:
-//    1. v/vn/mtllib/usemtl/f 명령 파싱
-//    2. 모든 면을 RawFace 로 임시 저장
-//    3. 삼각형 수 >= 2048 이면 XY 그리드로 공간 분할 (청크)
-//       → 각 청크를 독립 MeshRange(part)로 저장
-//       → 추후 청크 단위 프러스텀 컬링 가능
-//    4. 법선: 파일에 있으면 사용, 없으면 면법선 계산
-//
-//  폴리곤 처리: fan triangulation (0-1-2, 0-2-3, ... 순으로 분할)
-// ─────────────────────────────────────────────────────────────────────────────
+// loadOBJDetailed  –  OBJ 파싱 + 공간 청크 분할, whole+parts 반환
+// 처리 흐름:
+// 1. v/vn/mtllib/usemtl/f 명령 파싱
+// 2. 모든 면을 RawFace 로 임시 저장
+// 3. 삼각형 수 >= 2048 이면 XY 그리드로 공간 분할 (청크)
+// → 각 청크를 독립 MeshRange(part)로 저장
+// → 추후 청크 단위 프러스텀 컬링 가능
+// 4. 법선: 파일에 있으면 사용, 없으면 면법선 계산
+// 폴리곤 처리: fan triangulation (0-1-2, 0-2-3, ... 순으로 분할)
 LoadedMesh loadOBJDetailed(const std::string& path,
                            std::vector<Vertex>& verts,
                            std::vector<uint32_t>& inds,
@@ -333,8 +306,8 @@ LoadedMesh loadOBJDetailed(const std::string& path,
 
     // OBJ 원시 데이터 버퍼
     std::vector<glm::vec3> positions; // 'v' 명령으로 수집한 위치 목록
-    std::vector<glm::vec3> normals;   // 'vn' 명령으로 수집한 법선 목록
-    std::unordered_map<std::string, glm::vec3> materials; // 재질명 → Kd 색상
+    std::vector<glm::vec3> normals; // 'vn' 명령으로 수집한 법선 목록
+    std::unordered_map<std::string, glm::vec3> materials; // 재질명 -> Kd 색상
 
     // colorOverride >= 0 이면 단일 색상 사용, 아니면 MTL 의 Kd 사용
     glm::vec3 curColor = (colorOverride.r >= 0.f) ? colorOverride : glm::vec3(0.8f);
@@ -343,7 +316,7 @@ LoadedMesh loadOBJDetailed(const std::string& path,
     struct RawFace {
         std::array<int,3> posIdx; // 포지션 인덱스 (1-based, 음수 = 상대)
         std::array<int,3> nrmIdx; // 법선 인덱스 (1-based, 0 = 없음)
-        glm::vec3 color;           // 이 면의 색상 (usemtl 기준)
+        glm::vec3 color; // 이 면의 색상 (usemtl 기준)
     };
     std::vector<RawFace> rawFaces;
     int posCount = 0; // 상대 인덱스 해석을 위해 face 읽는 시점의 포지션 수 기록
@@ -395,7 +368,7 @@ LoadedMesh loadOBJDetailed(const std::string& path,
                 for (int k = 0; k < 3; ++k) {
                     int nk = 0;
                     int pk = parseFaceToken(tokens[vi[k]], &nk);
-                    // 음수 인덱스 → 상대 참조로 변환 (OBJ 표준)
+                    // 음수 인덱스 -> 상대 참조로 변환 (OBJ 표준)
                     face.posIdx[k] = pk < 0 ? posCount + pk + 1 : pk;
                     face.nrmIdx[k] = nk < 0 ? (int)normals.size() + nk + 1 : nk;
                 }
@@ -404,7 +377,7 @@ LoadedMesh loadOBJDetailed(const std::string& path,
         }
     }
 
-    // ── whole 범위 초기화 ───────────────────────────────────────────────────
+    // whole 범위 초기화
     LoadedMesh out{};
     out.whole.indexStart = static_cast<uint32_t>(inds.size());
     out.whole.bboxMin    = glm::vec3( std::numeric_limits<float>::max());
@@ -417,14 +390,14 @@ LoadedMesh loadOBJDetailed(const std::string& path,
         return out;
     }
 
-    // 인덱스 → 포지션 변환 람다 (범위 체크 포함)
+    // 인덱스 -> 포지션 변환 람다 (범위 체크 포함)
     auto resolvePos = [&](int idx1Based) -> glm::vec3 {
         int idx = idx1Based - 1;
         if (idx < 0 || idx >= (int)positions.size()) return {};
         return positions[idx];
     };
 
-    // ── 전체 AABB 와 XY 스팬 계산 (공간 분할 그리드 크기 결정용) ───────────
+    // 전체 AABB 와 XY 스팬 계산 (공간 분할 그리드 크기 결정용)
     glm::vec2 minXY( std::numeric_limits<float>::max());
     glm::vec2 maxXY(-std::numeric_limits<float>::max());
     for (const auto& face : rawFaces) {
@@ -437,11 +410,11 @@ LoadedMesh loadOBJDetailed(const std::string& path,
         }
     }
 
-    // ── 공간 그리드 분할 (대형 메시 최적화) ────────────────────────────────
+    // 공간 그리드 분할 (대형 메시 최적화)
     // 2048 삼각형 미만이면 분할하지 않음 (오버헤드가 이득보다 큼)
     const int triCount = (int)rawFaces.size();
-    const int targetTrisPerChunk = 768;  // 청크당 목표 삼각형 수
-    const int maxChunkAxis = 16;         // 한 축 최대 청크 수 (16×16 = 256 청크)
+    const int targetTrisPerChunk = 768; // 청크당 목표 삼각형 수
+    const int maxChunkAxis = 16; // 한 축 최대 청크 수 (16×16 = 256 청크)
     glm::vec2 spanXY = maxXY - minXY;
 
     int gridX = 1, gridY = 1;
@@ -455,7 +428,7 @@ LoadedMesh loadOBJDetailed(const std::string& path,
         gridY = std::clamp((desiredChunks + gridX - 1) / gridX, 1, maxChunkAxis);
     }
 
-    // ── 면 → 그리드 버킷 분류 (중심점 좌표 기준) ───────────────────────────
+    // 면 -> 그리드 버킷 분류 (중심점 좌표 기준)
     std::vector<std::vector<int>> buckets(gridX * gridY);
     for (int fi = 0; fi < triCount; ++fi) {
         const auto& face = rawFaces[fi];
@@ -465,7 +438,7 @@ LoadedMesh loadOBJDetailed(const std::string& path,
         glm::vec2 centroid((p0.x + p1.x + p2.x) / 3.f,
                            (p0.y + p1.y + p2.y) / 3.f);
 
-        // 정규화 좌표 [0,1] → 그리드 셀 인덱스
+        // 정규화 좌표 [0,1] -> 그리드 셀 인덱스
         int bx = 0, by = 0;
         if (gridX > 1 && spanXY.x > 1e-3f) {
             float tx = (centroid.x - minXY.x) / spanXY.x;
@@ -478,7 +451,7 @@ LoadedMesh loadOBJDetailed(const std::string& path,
         buckets[by * gridX + bx].push_back(fi);
     }
 
-    // ── 각 버킷 → MeshRange(part) 생성 ────────────────────────────────────
+    // 각 버킷 -> MeshRange(part) 생성
     for (const auto& bucket : buckets) {
         if (bucket.empty()) continue; // 빈 버킷 건너뜀
 
@@ -547,9 +520,7 @@ MeshRange loadOBJ(const std::string& path,
     return loadOBJDetailed(path, verts, inds, colorOverride).whole;
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-//  확장자 기반 통합 디스패처
-// ═════════════════════════════════════════════════════════════════════════════
+// 확장자 기반 메시 로더 선택
 
 LoadedMesh loadMeshDetailed(const std::string& path,
                             std::vector<Vertex>& verts,

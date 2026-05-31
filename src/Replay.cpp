@@ -13,11 +13,9 @@
 #  include <sys/stat.h>
 #endif
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  saveReplay  –  녹화된 프레임 배열을 바이너리 파일로 저장
-//  헤더: "VRPL" + 버전(1) + 프레임 수
-//  본문: 각 프레임마다 [time, x, y, z, yaw, pitch] (모두 float32)
-// ─────────────────────────────────────────────────────────────────────────────
+// saveReplay  –  녹화된 프레임 배열을 바이너리 파일로 저장
+// 헤더: "VRPL" + 버전(1) + 프레임 수
+// 본문: 각 프레임마다 [time, x, y, z, yaw, pitch] (모두 float32)
 bool saveReplay(const std::string& path, const std::vector<ReplayFrame>& frames) {
     std::ofstream f(path, std::ios::binary);
     if (!f) {
@@ -44,10 +42,8 @@ bool saveReplay(const std::string& path, const std::vector<ReplayFrame>& frames)
     return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  loadReplay  –  바이너리 파일에서 프레임 배열을 읽어온다
-//  magic 검증 → 버전/카운트 읽기 → 프레임 배열 채우기
-// ─────────────────────────────────────────────────────────────────────────────
+// loadReplay  –  바이너리 파일에서 프레임 배열을 읽어온다
+// magic 검증 -> 버전/카운트 읽기 -> 프레임 배열 채우기
 bool loadReplay(const std::string& path, std::vector<ReplayFrame>& frames) {
     std::ifstream f(path, std::ios::binary);
     if (!f) {
@@ -82,11 +78,9 @@ bool loadReplay(const std::string& path, std::vector<ReplayFrame>& frames) {
     return true;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  findReplayFiles  –  dir 안의 *.replay 파일 목록을 이름순 정렬 후 반환
-//  Windows: Win32 FindFirstFile API 사용
-//  Linux/macOS: POSIX opendir/readdir 사용
-// ─────────────────────────────────────────────────────────────────────────────
+// findReplayFiles  –  dir 안의 *.replay 파일 목록을 이름순 정렬 후 반환
+// Windows: Win32 FindFirstFile API 사용
+// Linux/macOS: POSIX opendir/readdir 사용
 std::vector<std::string> findReplayFiles(const std::string& dir) {
     std::vector<std::string> result;
 #ifdef _WIN32
@@ -113,15 +107,13 @@ std::vector<std::string> findReplayFiles(const std::string& dir) {
         closedir(d);
     }
 #endif
-    std::sort(result.begin(), result.end()); // 이름순 정렬 → 번호순과 동일
+    std::sort(result.begin(), result.end()); // 이름순 정렬 -> 번호순과 동일
     return result;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  nextReplayPath  –  dir 안의 기존 파일 수에 +1 한 번호로 경로 생성
-//  예: 기존 replay_001, _002 가 있으면 → replay_003.replay 반환
-//  dir 가 없으면 mkdir 으로 생성
-// ─────────────────────────────────────────────────────────────────────────────
+// nextReplayPath  –  dir 안의 기존 파일 수에 +1 한 번호로 경로 생성
+// 예: 기존 replay_001, _002 가 있으면 -> replay_003.replay 반환
+// dir 가 없으면 mkdir 으로 생성
 std::string nextReplayPath(const std::string& dir) {
     // 디렉토리 없으면 생성 (이미 있어도 무시됨)
 #ifdef _WIN32

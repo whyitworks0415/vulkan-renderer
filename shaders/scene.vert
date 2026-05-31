@@ -1,25 +1,25 @@
 #version 450
 
-// ── Vertex input ──────────────────────────────────────────────────────────────
+// 버텍스 입력
 layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec3 inColor;
 layout(location = 3) in vec2 inUV;
 
-// ── Outputs to fragment shader ────────────────────────────────────────────────
+// 프래그먼트 셰이더 출력
 layout(location = 0) out vec3 fragPos;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec3 fragColor;
 layout(location = 3) out vec2 fragUV;
 
-// ── Uniforms ──────────────────────────────────────────────────────────────────
+// 공통 UBO
 layout(set = 0, binding = 0) uniform CameraUBO {
     mat4 view;
     mat4 proj;
-    vec4 cameraPos; // .xyz = position, .w = unused
+    vec4 cameraPos; // .xyz는 카메라 위치, .w는 사용하지 않는다.
 } cam;
 
-// Per-draw model matrix + material packed in push constants (128 bytes max)
+// 드로우별 모델 행렬과 재질 값을 push constant에 묶어 전달한다.
 layout(push_constant) uniform PushConstants {
     mat4  model;
     vec4  baseColor;
@@ -27,7 +27,7 @@ layout(push_constant) uniform PushConstants {
     float specularStrength;
     float reflectStrength;
     float textureIndex;
-    vec4  emissive;         // rgb=emissive color, a=emissive luminance
+    vec4  emissive; // rgb=발광 색상, a=발광 강도
 } pc;
 
 void main() {
